@@ -1,14 +1,57 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
+        <!-- Targets -->
         <TargetFrameworks>net8.0;netstandard2.0</TargetFrameworks>
         <Nullable>enable</Nullable>
         <LangVersion>latest</LangVersion>
+
+        <!-- Packing -->
+        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+
+        <!-- NuGet metadata -->
+        <PackageId>QueryKit</PackageId>
+        <Version>0.9.0</Version>
+        <Title>QueryKit</Title>
+        <Authors>Rowan Richards</Authors>
+        <Company>Rowan Richards</Company>
+        <Description>Lightweight, dependency-light SQL builder + CRUD extensions for Dapper. Dialect-aware. Attribute-friendly. Zero ceremony.</Description>
+        <PackageTags>dapper sql crud micro-orm query repository</PackageTags>
+        <PackageProjectUrl>https://github.com/RwnRchrds/QueryKit</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/RwnRchrds/QueryKit</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PublishRepositoryUrl>true</PublishRepositoryUrl>
+        <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+        <EmbedUntrackedSources>true</EmbedUntrackedSources>
+
+        <!-- Versioning / localization -->
+        <AssemblyVersion>0.9.0</AssemblyVersion>
+        <FileVersion>0.9.0</FileVersion>
+        <NeutralLanguage>en-GB</NeutralLanguage>
     </PropertyGroup>
 
+    <!-- Optional per-target tweaks (kept simple; both targets get nullable + latest C#) -->
+    <!--<PropertyGroup Condition="'$(TargetFramework)'=='netstandard2.0'">
+      <Nullable>enable</Nullable>
+      <LangVersion>latest</LangVersion>
+    </PropertyGroup>-->
+
     <ItemGroup>
-      <PackageReference Include="Dapper" Version="2.1.66" />
-      <PackageReference Include="Microsoft.CSharp" Version="4.7.0" />
+        <PackageReference Include="Dapper" Version="2.1.66" />
+        <!-- SourceLink for rich debugging from NuGet -->
+        <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.*" PrivateAssets="All" />
+        <!-- Only needed for netstandard2.0 builds that use dynamic binder -->
+        <PackageReference Include="Microsoft.CSharp" Version="4.7.0" Condition="'$(TargetFramework)'=='netstandard2.0'" />
+    </ItemGroup>
+
+    <!-- Ensure README is packed so it appears on nuget.org -->
+    <ItemGroup>
+        <None Include="$(SolutionDir)README.md" Pack="true" PackagePath="" />
     </ItemGroup>
 
 </Project>

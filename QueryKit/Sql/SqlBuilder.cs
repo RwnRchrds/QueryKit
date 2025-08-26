@@ -12,9 +12,9 @@ namespace QueryKit.Sql
     {
         private readonly SqlConvention _conv;
 
-        public SqlBuilder(SqlConvention conv) { _conv = conv; }
+        internal SqlBuilder(SqlConvention conv) { _conv = conv; }
 
-        public void BuildSelect(StringBuilder sb, IEnumerable<PropertyInfo> props)
+        internal void BuildSelect(StringBuilder sb, IEnumerable<PropertyInfo> props)
         {
             var list = props.ToList();
             var addedAny = false;
@@ -35,7 +35,7 @@ namespace QueryKit.Sql
             }
         }
 
-        public void BuildWhere<TEntity>(StringBuilder sb, IEnumerable<PropertyInfo> props, object? where = null)
+        internal void BuildWhere<TEntity>(StringBuilder sb, IEnumerable<PropertyInfo> props, object? where = null)
         {
             var arr = props.ToArray();
             for (var i = 0; i < arr.Length; i++)
@@ -63,7 +63,7 @@ namespace QueryKit.Sql
             }
         }
 
-        public void BuildInsertParameters<T>(StringBuilder sb)
+        internal void BuildInsertParameters<T>(StringBuilder sb)
         {
             var props = GetScaffoldableProperties<T>().ToArray();
             for (var i = 0; i < props.Length; i++)
@@ -88,7 +88,7 @@ namespace QueryKit.Sql
             if (sb.ToString().EndsWith(", ")) sb.Length -= 2;
         }
 
-        public void BuildInsertValues<T>(StringBuilder sb)
+        internal void BuildInsertValues<T>(StringBuilder sb)
         {
             var props = GetScaffoldableProperties<T>().ToArray();
             for (var i = 0; i < props.Length; i++)
@@ -113,7 +113,7 @@ namespace QueryKit.Sql
             if (sb.ToString().EndsWith(", ")) sb.Length -= 2;
         }
 
-        public void BuildUpdateSet<T>(T entity, StringBuilder sb)
+        internal void BuildUpdateSet<T>(T entity, StringBuilder sb)
         {
             var props = GetUpdateableProperties(entity).ToArray();
             for (var i = 0; i < props.Length; i++)
@@ -124,14 +124,14 @@ namespace QueryKit.Sql
             }
         }
 
-        public static IEnumerable<PropertyInfo> GetScaffoldableProperties<T>()
+        internal static IEnumerable<PropertyInfo> GetScaffoldableProperties<T>()
         {
             var props = typeof(T).GetProperties();
             props = props.Where(p => p.GetCustomAttributes(true).Any(a => a.GetType().Name == nameof(EditableAttribute) && !SqlConvention.IsEditable(p)) == false).ToArray();
             return props.Where(p => p.PropertyType.IsSimpleType() || SqlConvention.IsEditable(p));
         }
 
-        public static IEnumerable<PropertyInfo> GetUpdateableProperties<T>(T entity)
+        internal static IEnumerable<PropertyInfo> GetUpdateableProperties<T>(T entity)
         {
             var props = GetScaffoldableProperties<T>()
                 .Where(p => !p.Name.Equals("Id", StringComparison.OrdinalIgnoreCase))

@@ -13,11 +13,11 @@ using QueryKit.Sql;
 
 namespace QueryKit.Extensions
 {
+    /// <summary>
+    /// Provides asynchronous CRUD extension methods for <see cref="IDbConnection"/> using Dapper.
+    /// </summary>
     public static class ConnectionExtensionsAsync
     {
-        /// <summary>
-        /// Provides asynchronous CRUD extension methods for <see cref="IDbConnection"/> using Dapper.
-        /// </summary>
         private static DialectConfig Config => ConnectionExtensions.Config;
 
         private static SqlConvention NewConvention() =>

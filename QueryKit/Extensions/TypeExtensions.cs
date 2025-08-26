@@ -7,7 +7,7 @@ namespace QueryKit.Extensions
 {
     internal static class TypeExtensions
     {
-        public static bool IsSimpleType(this Type type)
+        internal static bool IsSimpleType(this Type type)
         {
             var underlyingType = Nullable.GetUnderlyingType(type);
             type = underlyingType ?? type;
@@ -21,7 +21,7 @@ namespace QueryKit.Extensions
             return simpleTypes.Contains(type) || type.IsEnum;
         }
 
-        public static string CacheKey(this IEnumerable<PropertyInfo> props) =>
+        internal static string CacheKey(this IEnumerable<PropertyInfo> props) =>
             string.Join(",", props.Select(p => p.DeclaringType!.FullName + "." + p.Name));
     }
 }

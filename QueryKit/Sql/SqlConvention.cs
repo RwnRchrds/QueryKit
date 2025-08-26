@@ -17,23 +17,23 @@ namespace QueryKit.Sql
         private readonly ConcurrentDictionary<Type,string> _tableNames = new ConcurrentDictionary<Type, string>();
         private readonly ConcurrentDictionary<string,string> _columnNames = new ConcurrentDictionary<string,string>();
 
-        public SqlConvention(DialectConfig dialect, ITableNameResolver tableResolver, IColumnNameResolver columnResolver)
+        internal SqlConvention(DialectConfig dialect, ITableNameResolver tableResolver, IColumnNameResolver columnResolver)
         { _dialect = dialect; _table = tableResolver; _column = columnResolver; }
 
-        public string Encapsulate(string identifier) => string.Format(_dialect.Encapsulation, identifier);
+        internal string Encapsulate(string identifier) => string.Format(_dialect.Encapsulation, identifier);
 
-        public string GetTableName(Type type) =>
+        internal string GetTableName(Type type) =>
             _tableNames.GetOrAdd(type, t => _table.ResolveTableName(t));
 
-        public string GetTableName(object entity) => GetTableName(entity.GetType());
+        internal string GetTableName(object entity) => GetTableName(entity.GetType());
 
-        public string GetColumnName(PropertyInfo pi)
+        internal string GetColumnName(PropertyInfo pi)
         {
             var key = $"{pi.DeclaringType}.{pi.Name}";
             return _columnNames.GetOrAdd(key, _ => _column.ResolveColumnName(pi));
         }
 
-        public static Guid SequentialGuid()
+        internal static Guid SequentialGuid()
         {
             var tempGuid = Guid.NewGuid();
             var bytes = tempGuid.ToByteArray();
@@ -43,7 +43,7 @@ namespace QueryKit.Sql
             return new Guid(bytes);
         }
 
-        public static bool IsEditable(PropertyInfo pi)
+        internal static bool IsEditable(PropertyInfo pi)
         {
             var attrs = pi.GetCustomAttributes(false);
             if (attrs.Length > 0)
@@ -54,7 +54,7 @@ namespace QueryKit.Sql
             return false;
         }
 
-        public static bool IsReadOnly(PropertyInfo pi)
+        internal static bool IsReadOnly(PropertyInfo pi)
         {
             var attrs = pi.GetCustomAttributes(false);
             if (attrs.Length > 0)
@@ -65,12 +65,12 @@ namespace QueryKit.Sql
             return false;
         }
 
-        public static PropertyInfo[] GetIdProperties(Type type)
+        internal static PropertyInfo[] GetIdProperties(Type type)
         {
             var keyed = type.GetProperties().Where(p => p.GetCustomAttributes(true).Any(a => a.GetType().Name == nameof(KeyAttribute))).ToList();
             return (keyed.Any() ? keyed : type.GetProperties().Where(p => p.Name.Equals("Id", StringComparison.OrdinalIgnoreCase))).ToArray();
         }
 
-        public static PropertyInfo[] GetIdProperties(object entity) => GetIdProperties(entity.GetType());
+        internal static PropertyInfo[] GetIdProperties(object entity) => GetIdProperties(entity.GetType());
     }
 }

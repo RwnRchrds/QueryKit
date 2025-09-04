@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Dapper;
 using QueryKit.Dialects;
@@ -36,7 +37,8 @@ namespace QueryKit.Extensions
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
         /// <returns>A task producing the entity if found; otherwise <c>null</c>.</returns>
         /// <exception cref="ArgumentException">Thrown when no key property can be located.</exception>
-        public static async Task<T> GetAsync<T>(this IDbConnection connection, object id, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static async Task<T> GetAsync<T>(this IDbConnection connection, object id,
+            IDbTransaction? transaction = null, int? commandTimeout = null)
         {
             var conv = NewConvention();
             var builder = NewBuilder(conv);
@@ -88,8 +90,11 @@ namespace QueryKit.Extensions
         /// <param name="whereConditions">Anonymous object of filter properties/values.</param>
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the sequence of matching entities.</returns>
-        public static Task<IEnumerable<T>> GetListAsync<T>(this IDbConnection connection, object? whereConditions, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static Task<IEnumerable<T>> GetListAsync<T>(this IDbConnection connection, object? whereConditions,
+            IDbTransaction? transaction = null, int? commandTimeout = null,
+            CancellationToken cancellationToken = default)
         {
             var conv = NewConvention();
             var builder = NewBuilder(conv);
@@ -113,7 +118,8 @@ namespace QueryKit.Extensions
             if (Debugger.IsAttached)
                 Trace.WriteLine($"GetListAsync<{currentType.Name}>: {sb}");
 
-            return connection.QueryAsync<T>(sb.ToString(), whereConditions, transaction, commandTimeout);
+            return connection.QueryAsync<T>(Cmd(sb.ToString(), whereConditions, transaction, commandTimeout,
+                cancellationToken));
         }
 
         /// <summary>
@@ -125,8 +131,11 @@ namespace QueryKit.Extensions
         /// <param name="parameters">Optional parameters object.</param>
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the sequence of matching entities.</returns>
-        public static Task<IEnumerable<T>> GetListAsync<T>(this IDbConnection connection, string conditions, object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static Task<IEnumerable<T>> GetListAsync<T>(this IDbConnection connection, string conditions,
+            object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null,
+            CancellationToken cancellationToken = default)
         {
             var conv = NewConvention();
             var builder = NewBuilder(conv);
@@ -151,7 +160,8 @@ namespace QueryKit.Extensions
             if (Debugger.IsAttached)
                 Trace.WriteLine($"GetListAsync<{currentType.Name}>: {sb}");
 
-            return connection.QueryAsync<T>(sb.ToString(), parameters, transaction, commandTimeout);
+            return connection.QueryAsync<T>(Cmd(sb.ToString(), parameters, transaction, commandTimeout,
+                cancellationToken));
         }
 
         /// <summary>
@@ -159,10 +169,12 @@ namespace QueryKit.Extensions
         /// </summary>
         /// <typeparam name="T">The entity type to map results to.</typeparam>
         /// <param name="connection">The database connection.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the sequence of all entities.</returns>
-        public static Task<IEnumerable<T>> GetListAsync<T>(this IDbConnection connection)
+        public static Task<IEnumerable<T>> GetListAsync<T>(this IDbConnection connection,
+            CancellationToken cancellationToken = default)
         {
-            return connection.GetListAsync<T>(new { });
+            return connection.GetListAsync<T>(new { }, cancellationToken: cancellationToken);
         }
 
         /// <summary>
@@ -177,9 +189,13 @@ namespace QueryKit.Extensions
         /// <param name="parameters">Optional parameters object.</param>
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the requested page of results.</returns>
         /// <exception cref="NotSupportedException">Thrown when paging is not supported for the current dialect.</exception>
-        public static Task<IEnumerable<T>> GetListPagedAsync<T>(this IDbConnection connection, int pageNumber, int rowsPerPage, string conditions, string orderby, object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static Task<IEnumerable<T>> GetListPagedAsync<T>(this IDbConnection connection, int pageNumber,
+            int rowsPerPage, string conditions, string orderby, object? parameters = null,
+            IDbTransaction? transaction = null, int? commandTimeout = null,
+            CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrEmpty(Config.PagedListSql))
                 throw new NotSupportedException("GetListPagedAsync is not supported for the current SQL dialect.");
@@ -214,12 +230,13 @@ namespace QueryKit.Extensions
                 if (!conditions.TrimStart().StartsWith("where", StringComparison.OrdinalIgnoreCase))
                     conditions = " where " + conditions;
             }
+
             var query = sql.Replace("{WhereClause}", conditions ?? string.Empty);
 
             if (Debugger.IsAttached)
                 Trace.WriteLine($"GetListPagedAsync<{currentType.Name}>: {query}");
 
-            return connection.QueryAsync<T>(query, parameters, transaction, commandTimeout);
+            return connection.QueryAsync<T>(Cmd(query, parameters, transaction, commandTimeout, cancellationToken));
         }
 
         /// <summary>
@@ -231,10 +248,13 @@ namespace QueryKit.Extensions
         /// <param name="entityToInsert">The entity instance to insert.</param>
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the generated primary key value.</returns>
-        public static Task<object> InsertAsync<T>(this IDbConnection connection, T entityToInsert, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static Task<object> InsertAsync<T>(this IDbConnection connection, T entityToInsert,
+            IDbTransaction? transaction = null, int? commandTimeout = null,
+            CancellationToken cancellationToken = default)
         {
-            return connection.InsertAsync<object, T>(entityToInsert, transaction, commandTimeout);
+            return connection.InsertAsync<object, T>(entityToInsert, transaction, commandTimeout, cancellationToken);
         }
 
         /// <summary>
@@ -246,9 +266,12 @@ namespace QueryKit.Extensions
         /// <param name="entityToInsert">The entity instance to insert.</param>
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the generated primary key value.</returns>
         /// <exception cref="ArgumentException">Thrown when no key property can be located or when a required string key is not provided.</exception>
-        public static async Task<TKey> InsertAsync<TKey, T>(this IDbConnection connection, T entityToInsert, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static async Task<TKey> InsertAsync<TKey, T>(this IDbConnection connection, T entityToInsert,
+            IDbTransaction? transaction = null, int? commandTimeout = null,
+            CancellationToken cancellationToken = default)
         {
             var conv = NewConvention();
             var builder = NewBuilder(conv);
@@ -275,7 +298,8 @@ namespace QueryKit.Extensions
             {
                 var val = keyProperty.GetValue(entityToInsert, null) as string;
                 if (string.IsNullOrWhiteSpace(val))
-                    throw new ArgumentException("String key must be supplied before calling InsertAsync when using a string [Key].");
+                    throw new ArgumentException(
+                        "String key must be supplied before calling InsertAsync when using a string [Key].");
             }
 
             var sbCols = new StringBuilder();
@@ -289,7 +313,8 @@ namespace QueryKit.Extensions
             if (!isGuidKey && !isStringKey)
             {
                 if (string.IsNullOrEmpty(Config.IdentitySql))
-                    throw new NotSupportedException("Identity retrieval SQL is not configured for the current dialect.");
+                    throw new NotSupportedException(
+                        "Identity retrieval SQL is not configured for the current dialect.");
 
                 sql.Append("; ");
                 sql.Append(Config.IdentitySql);
@@ -297,7 +322,8 @@ namespace QueryKit.Extensions
                 if (Debugger.IsAttached)
                     Trace.WriteLine($"InsertAsync<{type.Name}>: {sql}");
 
-                var id = await connection.ExecuteScalarAsync(sql.ToString(), entityToInsert, transaction, commandTimeout);
+                var id = await connection.ExecuteScalarAsync(Cmd(sql.ToString(), entityToInsert,
+                    transaction, commandTimeout, cancellationToken));
                 if (id == null || id is DBNull) return default;
                 return (TKey)Convert.ChangeType(id, typeof(TKey));
             }
@@ -306,7 +332,8 @@ namespace QueryKit.Extensions
                 if (Debugger.IsAttached)
                     Trace.WriteLine($"InsertAsync<{type.Name}>: {sql}");
 
-                await connection.ExecuteAsync(sql.ToString(), entityToInsert, transaction, commandTimeout);
+                await connection.ExecuteAsync(Cmd(sql.ToString(), entityToInsert, transaction, commandTimeout,
+                    cancellationToken));
                 return (TKey)keyProperty.GetValue(entityToInsert, null);
             }
         }
@@ -319,9 +346,12 @@ namespace QueryKit.Extensions
         /// <param name="entityToUpdate">The entity instance with updated values.</param>
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the number of rows affected.</returns>
         /// <exception cref="ArgumentException">Thrown when no key property can be located.</exception>
-        public static Task<int> UpdateAsync<T>(this IDbConnection connection, T entityToUpdate, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static Task<int> UpdateAsync<T>(this IDbConnection connection, T entityToUpdate,
+            IDbTransaction? transaction = null, int? commandTimeout = null,
+            CancellationToken cancellationToken = default)
         {
             var conv = NewConvention();
             var builder = NewBuilder(conv);
@@ -347,7 +377,8 @@ namespace QueryKit.Extensions
             if (Debugger.IsAttached)
                 Trace.WriteLine($"UpdateAsync<{type.Name}>: {sb}");
 
-            return connection.ExecuteAsync(sb.ToString(), entityToUpdate, transaction, commandTimeout);
+            return connection.ExecuteAsync(Cmd(sb.ToString(), entityToUpdate, transaction, commandTimeout,
+                cancellationToken));
         }
 
         /// <summary>
@@ -358,9 +389,12 @@ namespace QueryKit.Extensions
         /// <param name="entityToDelete">The entity instance whose key values will be used.</param>
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the number of rows affected.</returns>
         /// <exception cref="ArgumentException">Thrown when no key property can be located.</exception>
-        public static Task<int> DeleteAsync<T>(this IDbConnection connection, T entityToDelete, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static Task<int> DeleteAsync<T>(this IDbConnection connection, T entityToDelete,
+            IDbTransaction? transaction = null, int? commandTimeout = null,
+            CancellationToken cancellationToken = default)
         {
             var conv = NewConvention();
 
@@ -382,7 +416,8 @@ namespace QueryKit.Extensions
             if (Debugger.IsAttached)
                 Trace.WriteLine($"DeleteAsync<{type.Name}>: {sb}");
 
-            return connection.ExecuteAsync(sb.ToString(), entityToDelete, transaction, commandTimeout);
+            return connection.ExecuteAsync(Cmd(sb.ToString(), entityToDelete, transaction, commandTimeout,
+                cancellationToken));
         }
 
         /// <summary>
@@ -393,9 +428,12 @@ namespace QueryKit.Extensions
         /// <param name="id">The key value. For composite keys, supply an object with matching property names.</param>
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the number of rows affected.</returns>
         /// <exception cref="ArgumentException">Thrown when no key property can be located.</exception>
-        public static Task<int> DeleteAsync<T>(this IDbConnection connection, object id, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static Task<int> DeleteAsync<T>(this IDbConnection connection, object id,
+            IDbTransaction? transaction = null, int? commandTimeout = null,
+            CancellationToken cancellationToken = default)
         {
             var conv = NewConvention();
 
@@ -431,7 +469,7 @@ namespace QueryKit.Extensions
             if (Debugger.IsAttached)
                 Trace.WriteLine($"DeleteAsync<{type.Name}> by id: {sb}");
 
-            return connection.ExecuteAsync(sb.ToString(), dyn, transaction, commandTimeout);
+            return connection.ExecuteAsync(Cmd(sb.ToString(), dyn, transaction, commandTimeout, cancellationToken));
         }
 
         /// <summary>
@@ -442,8 +480,11 @@ namespace QueryKit.Extensions
         /// <param name="whereConditions">Anonymous object of filter properties/values.</param>
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the number of rows affected.</returns>
-        public static Task<int> DeleteListAsync<T>(this IDbConnection connection, object? whereConditions, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static Task<int> DeleteListAsync<T>(this IDbConnection connection, object? whereConditions,
+            IDbTransaction? transaction = null, int? commandTimeout = null,
+            CancellationToken cancellationToken = default)
         {
             var conv = NewConvention();
             var builder = NewBuilder(conv);
@@ -464,7 +505,8 @@ namespace QueryKit.Extensions
             if (Debugger.IsAttached)
                 Trace.WriteLine($"DeleteListAsync<{type.Name}>: {sb}");
 
-            return connection.ExecuteAsync(sb.ToString(), whereConditions, transaction, commandTimeout);
+            return connection.ExecuteAsync(Cmd(sb.ToString(), whereConditions, transaction,
+                commandTimeout, cancellationToken));
         }
 
         /// <summary>
@@ -476,8 +518,11 @@ namespace QueryKit.Extensions
         /// <param name="parameters">Optional parameters object.</param>
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the number of rows affected.</returns>
-        public static Task<int> DeleteListAsync<T>(this IDbConnection connection, string conditions, object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static Task<int> DeleteListAsync<T>(this IDbConnection connection, string conditions,
+            object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null,
+            CancellationToken cancellationToken = default)
         {
             var conv = NewConvention();
 
@@ -499,7 +544,8 @@ namespace QueryKit.Extensions
             if (Debugger.IsAttached)
                 Trace.WriteLine($"DeleteListAsync<{type.Name}>: {sb}");
 
-            return connection.ExecuteAsync(sb.ToString(), parameters, transaction, commandTimeout);
+            return connection.ExecuteAsync(Cmd(sb.ToString(), parameters, transaction, commandTimeout,
+                cancellationToken));
         }
 
         /// <summary>
@@ -511,8 +557,11 @@ namespace QueryKit.Extensions
         /// <param name="parameters">Optional parameters object.</param>
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the number of matching rows.</returns>
-        public static Task<int> RecordCountAsync<T>(this IDbConnection connection, string conditions = "", object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static Task<int> RecordCountAsync<T>(this IDbConnection connection, string conditions = "",
+            object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null,
+            CancellationToken cancellationToken = default)
         {
             var conv = NewConvention();
 
@@ -534,7 +583,8 @@ namespace QueryKit.Extensions
             if (Debugger.IsAttached)
                 Trace.WriteLine($"RecordCountAsync<{type.Name}>: {sb}");
 
-            return connection.ExecuteScalarAsync<int>(sb.ToString(), parameters, transaction, commandTimeout);
+            return connection.ExecuteScalarAsync<int>(Cmd(sb.ToString(), parameters, transaction, commandTimeout,
+                cancellationToken));
         }
 
         // util: reflect anonymous object props
@@ -542,5 +592,16 @@ namespace QueryKit.Extensions
         {
             return obj.GetType().GetProperties();
         }
+
+        private static CommandDefinition Cmd(string sql, object? param, IDbTransaction? tx,
+            int? timeout, CancellationToken ct) => new CommandDefinition(
+            commandText: sql,
+            parameters: param,
+            transaction: tx,
+            commandTimeout: timeout,
+            commandType: null,
+            flags: CommandFlags.Buffered,
+            cancellationToken: ct
+        );
     }
 }

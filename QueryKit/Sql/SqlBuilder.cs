@@ -123,7 +123,7 @@ namespace QueryKit.Sql
                 if (i < props.Length - 1) sb.Append(", ");
             }
         }
-
+        
         internal static IEnumerable<PropertyInfo> GetScaffoldableProperties<T>()
         {
             var props = typeof(T).GetProperties();

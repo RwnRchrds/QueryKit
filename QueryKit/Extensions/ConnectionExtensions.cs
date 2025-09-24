@@ -58,7 +58,7 @@ namespace QueryKit.Extensions
 
             var sb = new StringBuilder();
             sb.Append("Select ");
-            builder.BuildSelect(sb, Sql.SqlBuilder.GetScaffoldableProperties<T>());
+            builder.BuildSelect(sb, SqlBuilder.GetScaffoldableProperties<T>());
             sb.AppendFormat(" from {0} where ", table);
 
             for (int i = 0; i < idProps.Length; i++)
@@ -86,6 +86,25 @@ namespace QueryKit.Extensions
 
             return connection.Query<T>(sb.ToString(), dyn, transaction, buffered: true, commandTimeout).FirstOrDefault();
         }
+        
+        /// <summary>
+        /// Executes a stored procedure and maps the results to a list of <typeparamref name="T"/>.
+        /// </summary>
+        /// <param name="connection">The database connection.</param>
+        /// <param name="storedProcedureName">The name of the stored procedure to execute.</param>
+        /// <param name="parameters">The parameters to pass, if any.</param>
+        /// <param name="transaction">The transaction to use, if any.</param>
+        /// <param name="commandTimeout">Optional command timeout in seconds.</param>
+        /// <typeparam name="T">The entity type to map results to.</typeparam>
+        /// <returns></returns>
+        public static IList<T> ExecuteStoredProcedure<T>(this IDbConnection connection,
+            string storedProcedureName, object? parameters = null,
+            IDbTransaction? transaction = null, int? commandTimeout = null)
+        {
+            var result = connection.Query<T>(storedProcedureName, parameters, transaction, buffered: true,
+                commandTimeout, CommandType.StoredProcedure);
+            return result.ToList();
+        }
 
         /// <summary>
         /// Queries entities of type <typeparamref name="T"/> using an anonymous object for equality-based filters.
@@ -106,13 +125,13 @@ namespace QueryKit.Extensions
             var table = conv.GetTableName(currentType);
 
             var sb = new StringBuilder();
-            var whereProps = GetAllProperties(whereConditions).ToArray();
+            var whereProps = GetAllProperties(whereConditions)?.ToArray();
 
             sb.Append("Select ");
-            builder.BuildSelect(sb, Sql.SqlBuilder.GetScaffoldableProperties<T>());
+            builder.BuildSelect(sb, SqlBuilder.GetScaffoldableProperties<T>());
             sb.AppendFormat(" from {0}", table);
 
-            if (whereProps.Any())
+            if (whereProps != null && whereProps.Any())
             {
                 sb.Append(" where ");
                 builder.BuildWhere<T>(sb, whereProps, whereConditions);
@@ -145,7 +164,7 @@ namespace QueryKit.Extensions
 
             var sb = new StringBuilder();
             sb.Append("Select ");
-            builder.BuildSelect(sb, Sql.SqlBuilder.GetScaffoldableProperties<T>());
+            builder.BuildSelect(sb, SqlBuilder.GetScaffoldableProperties<T>());
             sb.AppendFormat(" from {0}", table);
 
             if (!string.IsNullOrWhiteSpace(conditions))
@@ -209,7 +228,7 @@ namespace QueryKit.Extensions
                 orderby = conv.GetColumnName(idProps.First());
 
             var selectCols = new StringBuilder();
-            NewBuilder(conv).BuildSelect(selectCols, Sql.SqlBuilder.GetScaffoldableProperties<T>());
+            NewBuilder(conv).BuildSelect(selectCols, SqlBuilder.GetScaffoldableProperties<T>());
 
             var sql = Config.PagedListSql
                 .Replace("{SelectColumns}", selectCols.ToString())
@@ -223,7 +242,7 @@ namespace QueryKit.Extensions
                 if (!conditions.TrimStart().StartsWith("where", StringComparison.OrdinalIgnoreCase))
                     conditions = " where " + conditions;
             }
-            var query = sql.Replace("{WhereClause}", conditions ?? string.Empty);
+            var query = sql.Replace("{WhereClause}", conditions);
 
             if (Debugger.IsAttached)
                 Trace.WriteLine($"GetListPaged<{currentType.Name}>: {query}");
@@ -241,7 +260,7 @@ namespace QueryKit.Extensions
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
         /// <returns>The generated primary key value.</returns>
-        public static object Insert<T>(this IDbConnection connection, T entityToInsert, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static object? Insert<T>(this IDbConnection connection, T entityToInsert, IDbTransaction? transaction = null, int? commandTimeout = null)
         {
             return Insert<object, T>(connection, entityToInsert, transaction, commandTimeout);
         }
@@ -257,7 +276,7 @@ namespace QueryKit.Extensions
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
         /// <returns>The generated primary key value.</returns>
         /// <exception cref="ArgumentException">Thrown when no key property can be located or when a required string key is not provided.</exception>
-        public static TKey Insert<TKey, T>(this IDbConnection connection, T entityToInsert, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static TKey? Insert<TKey, T>(this IDbConnection connection, T entityToInsert, IDbTransaction? transaction = null, int? commandTimeout = null)
         {
             var conv = NewConvention();
             var builder = NewBuilder(conv);
@@ -320,7 +339,7 @@ namespace QueryKit.Extensions
             {
                 // Guid/string key already set on the entity; just execute
                 connection.Execute(sql.ToString(), entityToInsert, transaction, commandTimeout);
-                return (TKey)keyProperty.GetValue(entityToInsert, null);
+                return (TKey?)keyProperty.GetValue(entityToInsert, null);
             }
         }
 
@@ -464,12 +483,12 @@ namespace QueryKit.Extensions
 
             var type = typeof(T);
             var table = conv.GetTableName(type);
-            var whereProps = GetAllProperties(whereConditions).ToArray();
+            var whereProps = GetAllProperties(whereConditions)?.ToArray();
 
             var sb = new StringBuilder();
             sb.AppendFormat("delete from {0}", table);
 
-            if (whereProps.Any())
+            if (whereProps != null && whereProps.Any())
             {
                 sb.Append(" where ");
                 builder.BuildWhere<T>(sb, whereProps, whereConditions);
@@ -552,9 +571,9 @@ namespace QueryKit.Extensions
         }
 
         // util: reflect anonymous object props
-        private static IEnumerable<PropertyInfo> GetAllProperties(object? obj)
+        private static IEnumerable<PropertyInfo>? GetAllProperties(object? obj)
         {
-            return obj.GetType().GetProperties();
+            return obj?.GetType().GetProperties();
         }
     }
 }

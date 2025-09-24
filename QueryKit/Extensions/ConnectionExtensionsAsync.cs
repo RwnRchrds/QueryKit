@@ -37,7 +37,7 @@ namespace QueryKit.Extensions
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
         /// <returns>A task producing the entity if found; otherwise <c>null</c>.</returns>
         /// <exception cref="ArgumentException">Thrown when no key property can be located.</exception>
-        public static async Task<T> GetAsync<T>(this IDbConnection connection, object id,
+        public static async Task<T?> GetAsync<T>(this IDbConnection connection, object id,
             IDbTransaction? transaction = null, int? commandTimeout = null)
         {
             var conv = NewConvention();
@@ -52,7 +52,7 @@ namespace QueryKit.Extensions
 
             var sb = new StringBuilder();
             sb.Append("Select ");
-            builder.BuildSelect(sb, Sql.SqlBuilder.GetScaffoldableProperties<T>());
+            builder.BuildSelect(sb, SqlBuilder.GetScaffoldableProperties<T>());
             sb.AppendFormat(" from {0} where ", table);
 
             for (int i = 0; i < idProps.Length; i++)
@@ -83,6 +83,27 @@ namespace QueryKit.Extensions
         }
 
         /// <summary>
+        /// Asynchronously executes a stored procedure and maps the results to a list of entities.
+        /// </summary>
+        /// <param name="connection">The database connection.</param>
+        /// <param name="storedProcedureName">The name of the stored procedure to execute.</param>
+        /// <param name="parameters"></param>
+        /// <param name="transaction"></param>
+        /// <param name="commandTimeout"></param>
+        /// <param name="cancellationToken"></param>
+        /// <typeparam name="T">The entity type to map results to.</typeparam>
+        /// <returns></returns>
+        public static async Task<IList<T>> ExecuteStoredProcedureAsync<T>(this IDbConnection connection,
+            string storedProcedureName, object? parameters = null,
+            IDbTransaction? transaction = null, int? commandTimeout = null,
+            CancellationToken cancellationToken = default)
+        {
+            var result = await connection.QueryAsync<T>(StoredProc(storedProcedureName, 
+                parameters, transaction, commandTimeout, cancellationToken));
+            return result.ToList();
+        }
+
+        /// <summary>
         /// Asynchronously queries entities using an anonymous object for equality-based filters.
         /// </summary>
         /// <typeparam name="T">The entity type to map results to.</typeparam>
@@ -103,13 +124,13 @@ namespace QueryKit.Extensions
             var table = conv.GetTableName(currentType);
 
             var sb = new StringBuilder();
-            var whereProps = GetAllProperties(whereConditions).ToArray();
+            var whereProps = GetAllProperties(whereConditions)?.ToArray();
 
             sb.Append("Select ");
-            builder.BuildSelect(sb, Sql.SqlBuilder.GetScaffoldableProperties<T>());
+            builder.BuildSelect(sb, SqlBuilder.GetScaffoldableProperties<T>());
             sb.AppendFormat(" from {0}", table);
 
-            if (whereProps.Any())
+            if (whereProps != null && whereProps.Any())
             {
                 sb.Append(" where ");
                 builder.BuildWhere<T>(sb, whereProps, whereConditions);
@@ -145,7 +166,7 @@ namespace QueryKit.Extensions
 
             var sb = new StringBuilder();
             sb.Append("Select ");
-            builder.BuildSelect(sb, Sql.SqlBuilder.GetScaffoldableProperties<T>());
+            builder.BuildSelect(sb, SqlBuilder.GetScaffoldableProperties<T>());
             sb.AppendFormat(" from {0}", table);
 
             if (!string.IsNullOrWhiteSpace(conditions))
@@ -216,7 +237,7 @@ namespace QueryKit.Extensions
                 orderby = conv.GetColumnName(idProps.First());
 
             var selectCols = new StringBuilder();
-            NewBuilder(conv).BuildSelect(selectCols, Sql.SqlBuilder.GetScaffoldableProperties<T>());
+            NewBuilder(conv).BuildSelect(selectCols, SqlBuilder.GetScaffoldableProperties<T>());
 
             var sql = Config.PagedListSql
                 .Replace("{SelectColumns}", selectCols.ToString())
@@ -231,7 +252,7 @@ namespace QueryKit.Extensions
                     conditions = " where " + conditions;
             }
 
-            var query = sql.Replace("{WhereClause}", conditions ?? string.Empty);
+            var query = sql.Replace("{WhereClause}", conditions);
 
             if (Debugger.IsAttached)
                 Trace.WriteLine($"GetListPagedAsync<{currentType.Name}>: {query}");
@@ -250,7 +271,7 @@ namespace QueryKit.Extensions
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the generated primary key value.</returns>
-        public static Task<object> InsertAsync<T>(this IDbConnection connection, T entityToInsert,
+        public static Task<object?> InsertAsync<T>(this IDbConnection connection, T entityToInsert,
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
@@ -269,7 +290,7 @@ namespace QueryKit.Extensions
         /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the generated primary key value.</returns>
         /// <exception cref="ArgumentException">Thrown when no key property can be located or when a required string key is not provided.</exception>
-        public static async Task<TKey> InsertAsync<TKey, T>(this IDbConnection connection, T entityToInsert,
+        public static async Task<TKey?> InsertAsync<TKey, T>(this IDbConnection connection, T entityToInsert,
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
@@ -334,7 +355,7 @@ namespace QueryKit.Extensions
 
                 await connection.ExecuteAsync(Cmd(sql.ToString(), entityToInsert, transaction, commandTimeout,
                     cancellationToken));
-                return (TKey)keyProperty.GetValue(entityToInsert, null);
+                return (TKey?)keyProperty.GetValue(entityToInsert, null);
             }
         }
 
@@ -491,12 +512,12 @@ namespace QueryKit.Extensions
 
             var type = typeof(T);
             var table = conv.GetTableName(type);
-            var whereProps = GetAllProperties(whereConditions).ToArray();
+            var whereProps = GetAllProperties(whereConditions)?.ToArray();
 
             var sb = new StringBuilder();
             sb.AppendFormat("delete from {0}", table);
 
-            if (whereProps.Any())
+            if (whereProps != null && whereProps.Any())
             {
                 sb.Append(" where ");
                 builder.BuildWhere<T>(sb, whereProps, whereConditions);
@@ -588,9 +609,9 @@ namespace QueryKit.Extensions
         }
 
         // util: reflect anonymous object props
-        private static IEnumerable<PropertyInfo> GetAllProperties(object? obj)
+        private static IEnumerable<PropertyInfo>? GetAllProperties(object? obj)
         {
-            return obj.GetType().GetProperties();
+            return obj?.GetType().GetProperties();
         }
 
         private static CommandDefinition Cmd(string sql, object? param, IDbTransaction? tx,
@@ -600,6 +621,17 @@ namespace QueryKit.Extensions
             transaction: tx,
             commandTimeout: timeout,
             commandType: null,
+            flags: CommandFlags.Buffered,
+            cancellationToken: ct
+        );
+        
+        private static CommandDefinition StoredProc(string storedProcedureName, object? param, IDbTransaction? tx,
+            int? timeout, CancellationToken ct) => new CommandDefinition(
+            commandText: storedProcedureName,
+            parameters: param,
+            transaction: tx,
+            commandTimeout: timeout,
+            commandType: CommandType.StoredProcedure,
             flags: CommandFlags.Buffered,
             cancellationToken: ct
         );

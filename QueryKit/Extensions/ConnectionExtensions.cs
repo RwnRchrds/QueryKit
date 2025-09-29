@@ -89,8 +89,12 @@ namespace QueryKit.Extensions
             {
                 foreach (var p in idProps)
                 {
-                    var val = id.GetType().GetProperty(p.Name)!.GetValue(id, null);
-                    dyn.Add("@" + p.Name, val);
+                    var val = id.GetType().GetProperty(p.Name);
+                    if (val == null)
+                    {
+                        throw new ArgumentException($"Missing key property '{p.Name}' on id object for {typeof(T).Name}.");
+                    }
+                    dyn.Add("@" + p.Name, val.GetValue(id, null));
                 }
             }
 

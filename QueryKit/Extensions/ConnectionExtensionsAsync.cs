@@ -574,6 +574,7 @@ namespace QueryKit.Extensions
                         throw new ArgumentException(
                             $"Missing key property '{p.Name}' on id object for {typeof(T).Name}.");
                     var val = idProp.GetValue(id, null);
+                    dyn.Add("@" + p.Name, val);
                 }
             }
 

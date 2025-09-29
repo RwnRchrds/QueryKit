@@ -6,7 +6,6 @@
 - **NuGet**: `QueryKit`
 - **Targets**: `net8.0` (recommended) + optional `netstandard2.0`
 - **Databases**: SQL Server, PostgreSQL, MySQL/MariaDB, SQLite, Oracle, Db2
-- **Use cases**: quick data access layer, MyPortal DB layer rewrite, utilities for small services and tools
 
 ---
 

@@ -2,6 +2,8 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "QueryKit", "QueryKit\QueryKit.csproj", "{B7303381-F34C-4307-B629-3BDC82553E0D}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "QueryKit.Tests", "QueryKit.Tests\QueryKit.Tests.csproj", "{19096C85-EF91-48CA-BBD7-D43292A80579}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -12,5 +14,9 @@ Global
 		{B7303381-F34C-4307-B629-3BDC82553E0D}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{B7303381-F34C-4307-B629-3BDC82553E0D}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{B7303381-F34C-4307-B629-3BDC82553E0D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{19096C85-EF91-48CA-BBD7-D43292A80579}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{19096C85-EF91-48CA-BBD7-D43292A80579}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{19096C85-EF91-48CA-BBD7-D43292A80579}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{19096C85-EF91-48CA-BBD7-D43292A80579}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

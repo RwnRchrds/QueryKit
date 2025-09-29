@@ -1,15 +1,15 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using System.Diagnostics;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Dapper;
-using QueryKit.Dialects;
-using QueryKit.Metadata;
 using QueryKit.Sql;
 
 namespace QueryKit.Extensions
@@ -19,13 +19,13 @@ namespace QueryKit.Extensions
     /// </summary>
     public static class ConnectionExtensionsAsync
     {
-        private static DialectConfig Config => ConnectionExtensions.Config;
+        private static readonly ConcurrentDictionary<(Type, string),
+            Dictionary<string, string>> ColumnMapCache = new();
 
-        private static SqlConvention NewConvention() =>
-            new SqlConvention(Config, new TableNameResolver(), new ColumnNameResolver());
-
-        private static SqlBuilder NewBuilder(SqlConvention conv) =>
-            new SqlBuilder(conv);
+        internal static void ClearColumnMapCache()
+        {
+            ColumnMapCache.Clear();
+        }
 
         /// <summary>
         /// Asynchronously retrieves a single entity by its primary key.
@@ -35,13 +35,15 @@ namespace QueryKit.Extensions
         /// <param name="id">The primary key value. For composite keys, provide an object with matching property names.</param>
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
+        /// <param name="cancellationToken"></param>
         /// <returns>A task producing the entity if found; otherwise <c>null</c>.</returns>
         /// <exception cref="ArgumentException">Thrown when no key property can be located.</exception>
-        public static async Task<T> GetAsync<T>(this IDbConnection connection, object id,
-            IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static async Task<T?> GetAsync<T>(this IDbConnection connection, object id,
+            IDbTransaction? transaction = null, int? commandTimeout = null,
+            CancellationToken cancellationToken = default)
         {
-            var conv = NewConvention();
-            var builder = NewBuilder(conv);
+            var conv = ConnectionExtensions.NewConvention();
+            var builder = ConnectionExtensions.NewBuilder(conv);
 
             var currentType = typeof(T);
             var idProps = SqlConvention.GetIdProperties(currentType);
@@ -52,7 +54,7 @@ namespace QueryKit.Extensions
 
             var sb = new StringBuilder();
             sb.Append("Select ");
-            builder.BuildSelect(sb, Sql.SqlBuilder.GetScaffoldableProperties<T>());
+            builder.BuildSelect(sb, SqlBuilder.GetScaffoldableProperties<T>());
             sb.AppendFormat(" from {0} where ", table);
 
             for (int i = 0; i < idProps.Length; i++)
@@ -70,16 +72,42 @@ namespace QueryKit.Extensions
             {
                 foreach (var p in idProps)
                 {
-                    var val = id.GetType().GetProperty(p.Name)!.GetValue(id, null);
-                    dyn.Add("@" + p.Name, val);
+                    var val = id.GetType().GetProperty(p.Name);
+                    if (val == null)
+                    {
+                        throw new ArgumentException($"Missing key property '{p.Name}' on id object for {typeof(T).Name}.");
+                    }
+                    dyn.Add("@" + p.Name, val.GetValue(id, null));
                 }
             }
 
             if (Debugger.IsAttached)
                 Trace.WriteLine($"GetAsync<{currentType.Name}>: {sb} with Id: {id}");
 
-            var result = await connection.QueryAsync<T>(sb.ToString(), dyn, transaction, commandTimeout);
+            var result =
+                await connection.QueryAsync<T>(Cmd(sb.ToString(), dyn, transaction, commandTimeout, cancellationToken));
             return result.FirstOrDefault();
+        }
+
+        /// <summary>
+        /// Asynchronously executes a stored procedure and maps the results to a list of entities.
+        /// </summary>
+        /// <param name="connection">The database connection.</param>
+        /// <param name="storedProcedureName">The name of the stored procedure to execute.</param>
+        /// <param name="parameters"></param>
+        /// <param name="transaction"></param>
+        /// <param name="commandTimeout"></param>
+        /// <param name="cancellationToken"></param>
+        /// <typeparam name="T">The entity type to map results to.</typeparam>
+        /// <returns></returns>
+        public static async Task<IList<T>> ExecuteStoredProcedureAsync<T>(this IDbConnection connection,
+            string storedProcedureName, object? parameters = null,
+            IDbTransaction? transaction = null, int? commandTimeout = null,
+            CancellationToken cancellationToken = default)
+        {
+            var result = await connection.QueryAsync<T>(StoredProc(storedProcedureName,
+                parameters, transaction, commandTimeout, cancellationToken));
+            return result.ToList();
         }
 
         /// <summary>
@@ -91,28 +119,52 @@ namespace QueryKit.Extensions
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
+        /// <param name="orderBy">A function of columns to sort by.</param>
         /// <returns>A task producing the sequence of matching entities.</returns>
         public static Task<IEnumerable<T>> GetListAsync<T>(this IDbConnection connection, object? whereConditions,
             IDbTransaction? transaction = null, int? commandTimeout = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            params (Expression<Func<T,object>> Body, bool Descending)[] orderBy)
         {
-            var conv = NewConvention();
-            var builder = NewBuilder(conv);
+            var conv = ConnectionExtensions.NewConvention();
+            var builder = ConnectionExtensions.NewBuilder(conv);
 
             var currentType = typeof(T);
             var table = conv.GetTableName(currentType);
 
             var sb = new StringBuilder();
-            var whereProps = GetAllProperties(whereConditions).ToArray();
+            var whereProps = GetAllProperties(whereConditions)?.ToArray();
 
             sb.Append("Select ");
-            builder.BuildSelect(sb, Sql.SqlBuilder.GetScaffoldableProperties<T>());
+            builder.BuildSelect(sb, SqlBuilder.GetScaffoldableProperties<T>());
             sb.AppendFormat(" from {0}", table);
 
-            if (whereProps.Any())
+            if (whereProps != null && whereProps.Any())
             {
                 sb.Append(" where ");
                 builder.BuildWhere<T>(sb, whereProps, whereConditions);
+            }
+
+            if (orderBy.Length > 0)
+            {
+                var cols = new List<string>(orderBy.Length);
+
+                foreach (var (body, desc) in orderBy)
+                {
+                    var me =
+                        body.Body as MemberExpression ??
+                        (body.Body as UnaryExpression)?.Operand as MemberExpression;
+
+                    if (me?.Member is not PropertyInfo prop)
+                        throw new ArgumentException("OrderBy must be a property access, e.g., x => x.LastName.");
+
+                    var col = conv.GetColumnName(prop);
+                    if (string.IsNullOrEmpty(col))
+                        throw new ArgumentException($"Property '{prop.Name}' is not mapped for {typeof(T).Name}.");
+                    cols.Add(desc ? $"{col} DESC" : $"{col} ASC");
+                }
+
+                sb.Append(" order by ").Append(string.Join(", ", cols));
             }
 
             if (Debugger.IsAttached)
@@ -128,24 +180,25 @@ namespace QueryKit.Extensions
         /// <typeparam name="T">The entity type to map results to.</typeparam>
         /// <param name="connection">The database connection.</param>
         /// <param name="conditions">A SQL <c>WHERE</c> fragment (with or without the <c>WHERE</c> keyword).</param>
+        /// <param name="orderBy">Columns to order by.</param>
         /// <param name="parameters">Optional parameters object.</param>
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the sequence of matching entities.</returns>
         public static Task<IEnumerable<T>> GetListAsync<T>(this IDbConnection connection, string conditions,
-            object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null,
-            CancellationToken cancellationToken = default)
+            object? parameters = null, string? orderBy = null, IDbTransaction? transaction = null,
+            int? commandTimeout = null, CancellationToken cancellationToken = default)
         {
-            var conv = NewConvention();
-            var builder = NewBuilder(conv);
+            var conv = ConnectionExtensions.NewConvention();
+            var builder = ConnectionExtensions.NewBuilder(conv);
 
             var currentType = typeof(T);
             var table = conv.GetTableName(currentType);
 
             var sb = new StringBuilder();
             sb.Append("Select ");
-            builder.BuildSelect(sb, Sql.SqlBuilder.GetScaffoldableProperties<T>());
+            builder.BuildSelect(sb, SqlBuilder.GetScaffoldableProperties<T>());
             sb.AppendFormat(" from {0}", table);
 
             if (!string.IsNullOrWhiteSpace(conditions))
@@ -155,6 +208,40 @@ namespace QueryKit.Extensions
                 else
                     sb.Append(" ");
                 sb.Append(conditions);
+            }
+
+            if (!string.IsNullOrWhiteSpace(orderBy))
+            {
+                // Validate and normalize the ORDER BY against T's columns
+                Dictionary<string, string> allowed = BuildAllowedColumnMap<T>(conv);
+                var validated = new List<string>();
+                var parts = orderBy?.Split(',');
+                if (parts != null)
+                {
+                    for (int i = 0; i < parts.Length; i++)
+                    {
+                        var token = parts[i].Trim();
+                        if (string.IsNullOrEmpty(token)) continue;
+
+                        string?[] bits = token.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                        if (bits.Length == 0) continue;
+
+                        var rawCol = bits[0]!;
+                        var norm = NormalizeIdentifier(rawCol);
+                        if (!allowed.TryGetValue(norm, out var encapsulated))
+                            throw new ArgumentException("Invalid ORDER BY column '" + rawCol + "' for " +
+                                                        currentType.Name + ".");
+
+                        var dir = (bits.Length > 1 ? bits[1] : "ASC")?.ToUpperInvariant();
+                        if (dir != "ASC" && dir != "DESC")
+                            throw new ArgumentException("Invalid ORDER BY direction '" + dir + "'. Use ASC or DESC.");
+
+                        validated.Add(encapsulated + " " + dir);
+                    }
+                }
+
+                if (validated.Count > 0)
+                    sb.Append(" order by ").Append(string.Join(", ", validated));
             }
 
             if (Debugger.IsAttached)
@@ -185,7 +272,7 @@ namespace QueryKit.Extensions
         /// <param name="pageNumber">1-based page number.</param>
         /// <param name="rowsPerPage">Number of rows per page.</param>
         /// <param name="conditions">A SQL <c>WHERE</c> fragment (with or without the <c>WHERE</c> keyword).</param>
-        /// <param name="orderby">The <c>ORDER BY</c> clause (e.g., <c>"LastName asc"</c>).</param>
+        /// <param name="orderBy">The <c>ORDER BY</c> clause (e.g., <c>"LastName asc"</c>).</param>
         /// <param name="parameters">Optional parameters object.</param>
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
@@ -193,17 +280,17 @@ namespace QueryKit.Extensions
         /// <returns>A task producing the requested page of results.</returns>
         /// <exception cref="NotSupportedException">Thrown when paging is not supported for the current dialect.</exception>
         public static Task<IEnumerable<T>> GetListPagedAsync<T>(this IDbConnection connection, int pageNumber,
-            int rowsPerPage, string conditions, string orderby, object? parameters = null,
+            int rowsPerPage, string conditions, string? orderBy, object? parameters = null,
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrEmpty(Config.PagedListSql))
+            if (string.IsNullOrEmpty(ConnectionExtensions.Config.PagedListSql))
                 throw new NotSupportedException("GetListPagedAsync is not supported for the current SQL dialect.");
 
             if (pageNumber < 1)
                 throw new ArgumentOutOfRangeException(nameof(pageNumber), "Page number must be >= 1.");
 
-            var conv = NewConvention();
+            var conv = ConnectionExtensions.NewConvention();
 
             var currentType = typeof(T);
             var idProps = SqlConvention.GetIdProperties(currentType);
@@ -212,16 +299,47 @@ namespace QueryKit.Extensions
 
             var table = conv.GetTableName(currentType);
 
-            if (string.IsNullOrWhiteSpace(orderby))
-                orderby = conv.GetColumnName(idProps.First());
+            if (string.IsNullOrWhiteSpace(orderBy))
+            {
+                orderBy = conv.GetColumnName(idProps.First());
+                if (string.IsNullOrEmpty(orderBy))
+                    throw new ArgumentException($"Primary key for {typeof(T).Name} is not mapped to a column.");
+            }
+            else
+            {
+                var allowed = BuildAllowedColumnMap<T>(conv);
+                var validated = new List<string>();
+                foreach (var token in orderBy!.Split(','))
+                {
+                    var t = token.Trim();
+                    if (t.Length == 0) continue;
+                    var bits = t.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    var raw = bits[0];
+                    var norm = NormalizeIdentifier(raw);
+                    if (!allowed.TryGetValue(norm, out var encapsulated))
+                    {
+                        throw new ArgumentException($"Invalid ORDER BY column '{raw}' for {typeof(T).Name}.");
+                    }
+
+                    var dir = (bits.Length > 1 ? bits[1] : "ASC").ToUpperInvariant();
+                    if (dir != "ASC" && dir != "DESC")
+                    {
+                        throw new ArgumentException($"Invalid ORDER BY direction '{dir}'. Use ASC or DESC.");
+                    }
+
+                    validated.Add($"{encapsulated} {dir}");
+                }
+
+                orderBy = string.Join(", ", validated);
+            }
 
             var selectCols = new StringBuilder();
-            NewBuilder(conv).BuildSelect(selectCols, Sql.SqlBuilder.GetScaffoldableProperties<T>());
+            ConnectionExtensions.NewBuilder(conv).BuildSelect(selectCols, SqlBuilder.GetScaffoldableProperties<T>());
 
-            var sql = Config.PagedListSql
+            var sql = ConnectionExtensions.Config.PagedListSql
                 .Replace("{SelectColumns}", selectCols.ToString())
                 .Replace("{TableName}", table)
-                .Replace("{OrderBy}", orderby)
+                .Replace("{OrderBy}", orderBy)
                 .Replace("{PageNumber}", pageNumber.ToString())
                 .Replace("{RowsPerPage}", rowsPerPage.ToString());
 
@@ -231,7 +349,7 @@ namespace QueryKit.Extensions
                     conditions = " where " + conditions;
             }
 
-            var query = sql.Replace("{WhereClause}", conditions ?? string.Empty);
+            var query = sql.Replace("{WhereClause}", conditions);
 
             if (Debugger.IsAttached)
                 Trace.WriteLine($"GetListPagedAsync<{currentType.Name}>: {query}");
@@ -250,7 +368,7 @@ namespace QueryKit.Extensions
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the generated primary key value.</returns>
-        public static Task<object> InsertAsync<T>(this IDbConnection connection, T entityToInsert,
+        public static Task<object?> InsertAsync<T>(this IDbConnection connection, T entityToInsert,
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
@@ -269,12 +387,12 @@ namespace QueryKit.Extensions
         /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>A task producing the generated primary key value.</returns>
         /// <exception cref="ArgumentException">Thrown when no key property can be located or when a required string key is not provided.</exception>
-        public static async Task<TKey> InsertAsync<TKey, T>(this IDbConnection connection, T entityToInsert,
+        public static async Task<TKey?> InsertAsync<TKey, T>(this IDbConnection connection, T entityToInsert,
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
-            var conv = NewConvention();
-            var builder = NewBuilder(conv);
+            var conv = ConnectionExtensions.NewConvention();
+            var builder = ConnectionExtensions.NewBuilder(conv);
 
             var type = typeof(T);
             var table = conv.GetTableName(type);
@@ -312,12 +430,12 @@ namespace QueryKit.Extensions
 
             if (!isGuidKey && !isStringKey)
             {
-                if (string.IsNullOrEmpty(Config.IdentitySql))
+                if (string.IsNullOrEmpty(ConnectionExtensions.Config.IdentitySql))
                     throw new NotSupportedException(
                         "Identity retrieval SQL is not configured for the current dialect.");
 
                 sql.Append("; ");
-                sql.Append(Config.IdentitySql);
+                sql.Append(ConnectionExtensions.Config.IdentitySql);
 
                 if (Debugger.IsAttached)
                     Trace.WriteLine($"InsertAsync<{type.Name}>: {sql}");
@@ -334,7 +452,7 @@ namespace QueryKit.Extensions
 
                 await connection.ExecuteAsync(Cmd(sql.ToString(), entityToInsert, transaction, commandTimeout,
                     cancellationToken));
-                return (TKey)keyProperty.GetValue(entityToInsert, null);
+                return (TKey?)keyProperty.GetValue(entityToInsert, null);
             }
         }
 
@@ -353,8 +471,8 @@ namespace QueryKit.Extensions
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
-            var conv = NewConvention();
-            var builder = NewBuilder(conv);
+            var conv = ConnectionExtensions.NewConvention();
+            var builder = ConnectionExtensions.NewBuilder(conv);
 
             var type = typeof(T);
             var idProps = SqlConvention.GetIdProperties(type);
@@ -396,7 +514,7 @@ namespace QueryKit.Extensions
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
-            var conv = NewConvention();
+            var conv = ConnectionExtensions.NewConvention();
 
             var type = typeof(T);
             var idProps = SqlConvention.GetIdProperties(type);
@@ -435,7 +553,7 @@ namespace QueryKit.Extensions
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
-            var conv = NewConvention();
+            var conv = ConnectionExtensions.NewConvention();
 
             var type = typeof(T);
             var idProps = SqlConvention.GetIdProperties(type);
@@ -451,8 +569,11 @@ namespace QueryKit.Extensions
             {
                 foreach (var p in idProps)
                 {
-                    var val = id.GetType().GetProperty(p.Name)!.GetValue(id, null);
-                    dyn.Add("@" + p.Name, val);
+                    var idProp = id.GetType().GetProperty(p.Name);
+                    if (idProp == null)
+                        throw new ArgumentException(
+                            $"Missing key property '{p.Name}' on id object for {typeof(T).Name}.");
+                    var val = idProp.GetValue(id, null);
                 }
             }
 
@@ -486,17 +607,17 @@ namespace QueryKit.Extensions
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
-            var conv = NewConvention();
-            var builder = NewBuilder(conv);
+            var conv = ConnectionExtensions.NewConvention();
+            var builder = ConnectionExtensions.NewBuilder(conv);
 
             var type = typeof(T);
             var table = conv.GetTableName(type);
-            var whereProps = GetAllProperties(whereConditions).ToArray();
+            var whereProps = GetAllProperties(whereConditions)?.ToArray();
 
             var sb = new StringBuilder();
             sb.AppendFormat("delete from {0}", table);
 
-            if (whereProps.Any())
+            if (whereProps != null && whereProps.Any())
             {
                 sb.Append(" where ");
                 builder.BuildWhere<T>(sb, whereProps, whereConditions);
@@ -524,7 +645,7 @@ namespace QueryKit.Extensions
             object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
-            var conv = NewConvention();
+            var conv = ConnectionExtensions.NewConvention();
 
             var type = typeof(T);
             var table = conv.GetTableName(type);
@@ -563,7 +684,7 @@ namespace QueryKit.Extensions
             object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
-            var conv = NewConvention();
+            var conv = ConnectionExtensions.NewConvention();
 
             var type = typeof(T);
             var table = conv.GetTableName(type);
@@ -587,10 +708,40 @@ namespace QueryKit.Extensions
                 cancellationToken));
         }
 
-        // util: reflect anonymous object props
-        private static IEnumerable<PropertyInfo> GetAllProperties(object? obj)
+        private static Dictionary<string, string> BuildAllowedColumnMap<T>(SqlConvention conv)
         {
-            return obj.GetType().GetProperties();
+            var key = (typeof(T), ConnectionExtensions.Config.Dialect.ToString());
+            return ColumnMapCache.GetOrAdd(key, _ =>
+            {
+                var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var p in SqlBuilder.GetScaffoldableProperties<T>())
+                {
+                    var col = conv.GetColumnName(p);
+                    if (!string.IsNullOrEmpty(col))
+                    {
+                        map[NormalizeIdentifier(col)] = col;
+                        map[NormalizeIdentifier(p.Name)] = col;
+                    } 
+                }
+                return map;
+            });
+        }
+
+        private static string NormalizeIdentifier(string s)
+        {
+            s = s.Trim();
+            var lastDot = s.LastIndexOf('.');
+            if (lastDot >= 0 && lastDot < s.Length - 1) s = s.Substring(lastDot + 1);
+            if ((s.StartsWith("[") && s.EndsWith("]")) ||
+                (s.StartsWith("\"") && s.EndsWith("\"")) ||
+                (s.StartsWith("`") && s.EndsWith("`")))
+                s = s.Substring(1, s.Length - 2);
+            return s.ToLowerInvariant();
+        }
+
+        private static IEnumerable<PropertyInfo>? GetAllProperties(object? obj)
+        {
+            return obj?.GetType().GetProperties();
         }
 
         private static CommandDefinition Cmd(string sql, object? param, IDbTransaction? tx,
@@ -600,6 +751,17 @@ namespace QueryKit.Extensions
             transaction: tx,
             commandTimeout: timeout,
             commandType: null,
+            flags: CommandFlags.Buffered,
+            cancellationToken: ct
+        );
+
+        private static CommandDefinition StoredProc(string storedProcedureName, object? param, IDbTransaction? tx,
+            int? timeout, CancellationToken ct) => new CommandDefinition(
+            commandText: storedProcedureName,
+            parameters: param,
+            transaction: tx,
+            commandTimeout: timeout,
+            commandType: CommandType.StoredProcedure,
             flags: CommandFlags.Buffered,
             cancellationToken: ct
         );

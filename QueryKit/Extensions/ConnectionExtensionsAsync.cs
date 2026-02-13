@@ -10,6 +10,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Dapper;
+using QueryKit.Interfaces;
 using QueryKit.Sql;
 
 namespace QueryKit.Extensions
@@ -497,6 +498,95 @@ namespace QueryKit.Extensions
 
             return connection.ExecuteAsync(Cmd(sb.ToString(), entityToUpdate, transaction, commandTimeout,
                 cancellationToken));
+        }
+        
+        /// <summary>
+        /// Asynchronously updates an entity with optimistic concurrency using a Version property.
+        /// </summary>
+        /// <typeparam name="T">The entity type to update.</typeparam>
+        /// <param name="connection">The database connection.</param>
+        /// <param name="entityToUpdate">The entity instance with updated values.</param>
+        /// <param name="expectedVersion">
+        /// The expected Version value for concurrency control. The update will only succeed if the Version matches.
+        /// </param>
+        /// <param name="transaction">Optional transaction to enlist commands in.</param>
+        /// <param name="commandTimeout">Optional command timeout in seconds.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
+        /// <returns>
+        /// A task producing the number of rows affected. If the Version does not match, no rows will be updated.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">Thrown if the entityToUpdate is null.</exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if the entity type does not have a Version property or if the Version property is not a supported numeric type.
+        /// </exception>
+        public static Task<int> UpdateWithVersionAsync<T>(
+            this IDbConnection connection,
+            T entityToUpdate,
+            long expectedVersion,
+            IDbTransaction? transaction = null,
+            int? commandTimeout = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (entityToUpdate == null) throw new ArgumentNullException(nameof(entityToUpdate));
+
+            var conv = ConnectionExtensions.NewConvention();
+            var builder = ConnectionExtensions.NewBuilder(conv);
+
+            var type = typeof(T);
+
+            var idProps = SqlConvention.GetIdProperties(type);
+            if (idProps == null || idProps.Length == 0)
+                throw new ArgumentException("UpdateWithVersionAsync<T> requires an entity with a [Key] or Id property.");
+
+            var versionProp = type.GetProperty("Version", BindingFlags.Public | BindingFlags.Instance);
+            if (versionProp == null)
+                throw new ArgumentException($"{type.Name} must have a public Version property to use optimistic concurrency.");
+
+            // Support common numeric types
+            var vt = Nullable.GetUnderlyingType(versionProp.PropertyType) ?? versionProp.PropertyType;
+            var supported =
+                vt == typeof(byte) || vt == typeof(short) || vt == typeof(int) || vt == typeof(long);
+            if (!supported)
+                throw new ArgumentException($"{type.Name}.Version must be a numeric type (byte/short/int/long).");
+
+            var table = conv.GetTableName(type);
+            var versionCol = conv.GetColumnName(versionProp); // should already be correctly encapsulated/mapped
+
+            var sb = new StringBuilder();
+            sb.AppendFormat("update {0} set ", table);
+
+            // Build normal SET (must NOT include Version; exclude in SqlBuilder.GetUpdateableProperties)
+            builder.BuildUpdateSet(entityToUpdate, sb);
+
+            // Append version increment (handle empty SET edge-case)
+            if (sb.ToString().EndsWith(" set ", StringComparison.OrdinalIgnoreCase))
+            {
+                // no updateable columns - still allow version bump
+                sb.AppendFormat("{0} = {0} + 1", versionCol);
+            }
+            else
+            {
+                sb.Append(", ");
+                sb.AppendFormat("{0} = {0} + 1", versionCol);
+            }
+
+            sb.Append(" where ");
+            for (int i = 0; i < idProps.Length; i++)
+            {
+                if (i > 0) sb.Append(" and ");
+                sb.AppendFormat("{0} = @{1}", conv.GetColumnName(idProps[i]), idProps[i].Name);
+            }
+
+            // Concurrency gate
+            sb.AppendFormat(" and {0} = @ExpectedVersion", versionCol);
+
+            var p = new DynamicParameters(entityToUpdate);
+            p.Add("@ExpectedVersion", expectedVersion);
+
+            if (Debugger.IsAttached)
+                Trace.WriteLine($"UpdateWithVersionAsync<{type.Name}>: {sb}");
+
+            return connection.ExecuteAsync(Cmd(sb.ToString(), p, transaction, commandTimeout, cancellationToken));
         }
 
         /// <summary>

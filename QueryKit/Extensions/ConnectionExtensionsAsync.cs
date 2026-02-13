@@ -76,8 +76,10 @@ namespace QueryKit.Extensions
                     var val = id.GetType().GetProperty(p.Name);
                     if (val == null)
                     {
-                        throw new ArgumentException($"Missing key property '{p.Name}' on id object for {typeof(T).Name}.");
+                        throw new ArgumentException(
+                            $"Missing key property '{p.Name}' on id object for {typeof(T).Name}.");
                     }
+
                     dyn.Add("@" + p.Name, val.GetValue(id, null));
                 }
             }
@@ -125,7 +127,7 @@ namespace QueryKit.Extensions
         public static Task<IEnumerable<T>> GetListAsync<T>(this IDbConnection connection, object? whereConditions,
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default,
-            params (Expression<Func<T,object>> Body, bool Descending)[] orderBy)
+            params (Expression<Func<T, object>> Body, bool Descending)[] orderBy)
         {
             var conv = ConnectionExtensions.NewConvention();
             var builder = ConnectionExtensions.NewBuilder(conv);
@@ -499,25 +501,27 @@ namespace QueryKit.Extensions
             return connection.ExecuteAsync(Cmd(sb.ToString(), entityToUpdate, transaction, commandTimeout,
                 cancellationToken));
         }
-        
+
         /// <summary>
-        /// Asynchronously updates an entity with optimistic concurrency using a Version property.
+        /// Asynchronously updates an entity with optimistic concurrency using a version column.
+        /// The version column is resolved by <see cref="SqlConvention.GetVersionProperty(Type)"/>:
+        /// either a property marked with <c>[Version]</c> or a conventional property named <c>Version</c>.
         /// </summary>
         /// <typeparam name="T">The entity type to update.</typeparam>
         /// <param name="connection">The database connection.</param>
         /// <param name="entityToUpdate">The entity instance with updated values.</param>
         /// <param name="expectedVersion">
-        /// The expected Version value for concurrency control. The update will only succeed if the Version matches.
+        /// The expected version value for concurrency control. The update will only succeed if the version matches.
         /// </param>
         /// <param name="transaction">Optional transaction to enlist commands in.</param>
         /// <param name="commandTimeout">Optional command timeout in seconds.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>
-        /// A task producing the number of rows affected. If the Version does not match, no rows will be updated.
+        /// A task producing the number of rows affected. If the version does not match, no rows will be updated.
         /// </returns>
-        /// <exception cref="ArgumentNullException">Thrown if the entityToUpdate is null.</exception>
+        /// <exception cref="ArgumentNullException">Thrown if <paramref name="entityToUpdate"/> is null.</exception>
         /// <exception cref="ArgumentException">
-        /// Thrown if the entity type does not have a Version property or if the Version property is not a supported numeric type.
+        /// Thrown if the entity type does not define a valid version property (long) via <c>[Version]</c> or <c>Version</c>.
         /// </exception>
         public static Task<int> UpdateWithVersionAsync<T>(
             this IDbConnection connection,
@@ -536,21 +540,14 @@ namespace QueryKit.Extensions
 
             var idProps = SqlConvention.GetIdProperties(type);
             if (idProps == null || idProps.Length == 0)
-                throw new ArgumentException("UpdateWithVersionAsync<T> requires an entity with a [Key] or Id property.");
+                throw new ArgumentException(
+                    "UpdateWithVersionAsync<T> requires an entity with a [Key] or Id property.");
 
-            var versionProp = type.GetProperty("Version", BindingFlags.Public | BindingFlags.Instance);
-            if (versionProp == null)
-                throw new ArgumentException($"{type.Name} must have a public Version property to use optimistic concurrency.");
-
-            // Support common numeric types
-            var vt = Nullable.GetUnderlyingType(versionProp.PropertyType) ?? versionProp.PropertyType;
-            var supported =
-                vt == typeof(byte) || vt == typeof(short) || vt == typeof(int) || vt == typeof(long);
-            if (!supported)
-                throw new ArgumentException($"{type.Name}.Version must be a numeric type (byte/short/int/long).");
+            // Resolve & validate the version property (must be long)
+            var versionProp = SqlConvention.GetVersionProperty(type);
 
             var table = conv.GetTableName(type);
-            var versionCol = conv.GetColumnName(versionProp); // should already be correctly encapsulated/mapped
+            var versionCol = conv.GetColumnName(versionProp);
 
             var sb = new StringBuilder();
             sb.AppendFormat("update {0} set ", table);
@@ -561,7 +558,6 @@ namespace QueryKit.Extensions
             // Append version increment (handle empty SET edge-case)
             if (sb.ToString().EndsWith(" set ", StringComparison.OrdinalIgnoreCase))
             {
-                // no updateable columns - still allow version bump
                 sb.AppendFormat("{0} = {0} + 1", versionCol);
             }
             else
@@ -812,8 +808,9 @@ namespace QueryKit.Extensions
                     {
                         map[NormalizeIdentifier(col)] = col;
                         map[NormalizeIdentifier(p.Name)] = col;
-                    } 
+                    }
                 }
+
                 return map;
             });
         }

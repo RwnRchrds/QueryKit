@@ -19,7 +19,26 @@
 
 ---
 
+## Optimistic Concurrency
+
+QueryKit supports optimistic concurrency via a long version column.
+
+Mark the property with `[Version]` or name it `Version`.
+
+```
+public class Entity
+{
+    public Guid Id { get; set; }
+
+    [Version]
+    public long Revision { get; set; }
+}
+```
+Use `UpdateWithVersionAsync(entity, expectedVersion)`.
+
+---
+
 ## Install
 
 ```bash
-dotnet add package QueryKit
+dotnet add package Rowan.QueryKit

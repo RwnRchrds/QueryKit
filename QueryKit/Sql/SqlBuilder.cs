@@ -137,6 +137,7 @@ namespace QueryKit.Sql
                 .Where(p => !p.Name.Equals("Id", StringComparison.OrdinalIgnoreCase))
                 .Where(p => !p.Name.Equals("Version", StringComparison.OrdinalIgnoreCase))
                 .Where(p => p.GetCustomAttributes(true).All(a => a.GetType().Name != nameof(KeyAttribute)))
+                .Where(p => p.GetCustomAttributes(true).All(a => a.GetType().Name != nameof(VersionAttribute)))
                 .Where(p => p.GetCustomAttributes(true).All(a => !(a.GetType().Name == nameof(ReadOnlyAttribute) && SqlConvention.IsReadOnly(p))))
                 .Where(p => p.GetCustomAttributes(true).All(a => a.GetType().Name != nameof(IgnoreUpdateAttribute)))
                 .Where(p => p.GetCustomAttributes(true).All(a => a.GetType().Name != nameof(NotMappedAttribute)));

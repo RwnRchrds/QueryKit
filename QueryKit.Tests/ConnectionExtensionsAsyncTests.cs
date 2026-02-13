@@ -139,6 +139,144 @@ public class ConnectionExtensionsAsyncTests
         Assert.That(rows, Is.EqualTo(1));
         Assert.That((await _conn.GetAsync<Person>(p.Id))!.Age, Is.EqualTo(56));
     }
+    
+    [Test]
+    public async Task UpdateWithVersionAsync_WithMatchingVersion_UpdatesRowAndIncrementsVersion()
+    {
+        var p = new PersonWithVersion
+        {
+            Id = Guid.Empty,
+            Version = 1,
+            FirstName = "Barbara",
+            LastName = "Liskov",
+            Age = 55
+        };
+
+        var id = await _conn.InsertAsync<Guid, PersonWithVersion>(p);
+        p.Id = id;
+
+        p.Age = 56;
+
+        var rows = await _conn.UpdateWithVersionAsync(p, expectedVersion: 1);
+
+        Assert.That(rows, Is.EqualTo(1));
+
+        var loaded = await _conn.GetAsync<PersonWithVersion>(p.Id);
+        Assert.That(loaded, Is.Not.Null);
+        Assert.That(loaded!.Age, Is.EqualTo(56));
+        Assert.That(loaded.Version, Is.EqualTo(2));
+    }
+    
+    [Test]
+    public async Task UpdateWithVersionAsync_WithMismatchedVersion_UpdatesZeroRows()
+    {
+        var p = new PersonWithVersion
+        {
+            Id = Guid.Empty,
+            Version = 1,
+            FirstName = "Grace",
+            LastName = "Hopper",
+            Age = 70
+        };
+
+        var id = await _conn.InsertAsync<Guid, PersonWithVersion>(p);
+        p.Id = id;
+
+        p.Age = 71;
+
+        var rows = await _conn.UpdateWithVersionAsync(p, expectedVersion: 999);
+
+        Assert.That(rows, Is.EqualTo(0));
+
+        var loaded = await _conn.GetAsync<PersonWithVersion>(p.Id);
+        Assert.That(loaded!.Age, Is.EqualTo(70));      // unchanged
+        Assert.That(loaded.Version, Is.EqualTo(1));    // unchanged
+    }
+    
+    [Test]
+    public async Task UpdateWithVersionAsync_WithVersionAttribute_UsesAttributedProperty()
+    {
+        var p = new PersonWithAttributedVersion
+        {
+            Id = Guid.Empty,
+            Revision = 1,
+            FirstName = "Ada"
+        };
+
+        var id = await _conn.InsertAsync<Guid, PersonWithAttributedVersion>(p);
+        p.Id = id;
+
+        p.FirstName = "Ada Updated";
+
+        var rows = await _conn.UpdateWithVersionAsync(p, expectedVersion: 1);
+
+        Assert.That(rows, Is.EqualTo(1));
+
+        var loaded = await _conn.GetAsync<PersonWithAttributedVersion>(p.Id);
+        Assert.That(loaded!.FirstName, Is.EqualTo("Ada Updated"));
+        Assert.That(loaded.Revision, Is.EqualTo(2));
+    }
+    
+    [Test]
+    public async Task UpdateWithVersionAsync_WithNullableVersion_Throws()
+    {
+        var p = new PersonWithNullableVersion
+        {
+            Id = Guid.Empty,
+            Revision = 1
+        };
+
+        var id = await _conn.InsertAsync<Guid, PersonWithNullableVersion>(p);
+        p.Id = id;
+
+        Assert.That(
+            async () => await _conn.UpdateWithVersionAsync(p, expectedVersion: 1),
+            Throws.TypeOf<ArgumentException>().With.Message.Contains("must be of type long"));
+    }
+    
+    [Test]
+    public async Task UpdateWithVersionAsync_WithMultipleVersionAttributes_Throws()
+    {
+        var p = new PersonWithTwoVersions
+        {
+            Id = Guid.Empty,
+            RevA = 1,
+            RevB = 1
+        };
+
+        var id = await _conn.InsertAsync<Guid, PersonWithTwoVersions>(p);
+        p.Id = id;
+
+        Assert.That(
+            async () => await _conn.UpdateWithVersionAsync(p, expectedVersion: 1),
+            Throws.TypeOf<ArgumentException>().With.Message.Contains("multiple properties marked"));
+    }
+    
+    [Test]
+    public async Task UpdateAsync_DoesNotUpdateVersionColumn()
+    {
+        var p = new PersonWithVersion
+        {
+            Id = Guid.Empty,
+            Version = 1,
+            FirstName = "Edsger",
+            LastName = "Dijkstra",
+            Age = 55
+        };
+
+        var id = await _conn.InsertAsync<Guid, PersonWithVersion>(p);
+        p.Id = id;
+
+        p.Age = 56;
+        p.Version = 999; // attempt to change version via normal UpdateAsync
+
+        var rows = await _conn.UpdateAsync(p);
+        Assert.That(rows, Is.EqualTo(1));
+
+        var loaded = await _conn.GetAsync<PersonWithVersion>(p.Id);
+        Assert.That(loaded!.Age, Is.EqualTo(56));
+        Assert.That(loaded.Version, Is.EqualTo(1));
+    }
 
     [Test]
     public async Task DeleteAsync_ById_RemovesRow()

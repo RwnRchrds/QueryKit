@@ -1,5 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations.Schema;
-using QueryKit.Attributes;
+﻿using QueryKit.Attributes;
 
 namespace QueryKit.Tests.Data;
 

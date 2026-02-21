@@ -1,5 +1,7 @@
-﻿using System.Reflection;
+﻿using QueryKit.Attributes;
 using QueryKit.Interfaces;
+using System.Linq;
+using System.Reflection;
 
 namespace QueryKit.Metadata
 {
@@ -12,15 +14,10 @@ namespace QueryKit.Metadata
         /// <inheritdoc />
         public string ResolveColumnName(PropertyInfo propertyInfo)
         {
-            var attrs = propertyInfo.GetCustomAttributes(true);
-            foreach (var a in attrs)
-            {
-                if (a.GetType().Name == "ColumnAttribute")
-                {
-                    var prop = a.GetType().GetProperty("Name");
-                    if (prop?.GetValue(a) is string s && !string.IsNullOrWhiteSpace(s)) return s;
-                }
-            }
+            var colAttr = propertyInfo.GetCustomAttributes(true).OfType<ColumnAttribute>().FirstOrDefault();
+            if (colAttr != null && !string.IsNullOrWhiteSpace(colAttr.Name))
+                return colAttr.Name;
+
             return propertyInfo.Name;
         }
     }

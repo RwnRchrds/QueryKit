@@ -259,6 +259,24 @@ public class ConnectionExtensionsTests
         });
     }
 
+    [Test]
+    public void DeleteList_WithNullWhere_Throws()
+    {
+        Assert.That(
+            () => _conn.DeleteList<Person>(null),
+            Throws.TypeOf<ArgumentException>()
+                .With.Message.Contains("requires at least one filter property"));
+    }
+
+    [Test]
+    public void DeleteList_WithEmptyAnonymousObject_Throws()
+    {
+        Assert.That(
+            () => _conn.DeleteList<Person>(new { }),
+            Throws.TypeOf<ArgumentException>()
+                .With.Message.Contains("requires at least one filter property"));
+    }
+
     private Person Seed(string first, string last, int age)
     {
         var p = new Person { Id = Guid.Empty, FirstName = first, LastName = last, Age = age };

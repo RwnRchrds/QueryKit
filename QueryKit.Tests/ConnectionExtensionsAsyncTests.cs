@@ -218,7 +218,7 @@ public class ConnectionExtensionsAsyncTests
     }
     
     [Test]
-    public async Task UpdateWithVersionAsync_WithNullableVersion_Throws()
+    public async Task InsertAsync_WithNullableVersion_Throws()
     {
         var p = new PersonWithNullableVersion
         {
@@ -226,11 +226,8 @@ public class ConnectionExtensionsAsyncTests
             Revision = 1
         };
 
-        var id = await _conn.InsertAsync<Guid, PersonWithNullableVersion>(p);
-        p.Id = id;
-
         Assert.That(
-            async () => await _conn.UpdateWithVersionAsync(p, expectedVersion: 1),
+            async () => await _conn.InsertAsync<Guid, PersonWithNullableVersion>(p),
             Throws.TypeOf<ArgumentException>().With.Message.Contains("must be of type long"));
     }
     
@@ -244,11 +241,8 @@ public class ConnectionExtensionsAsyncTests
             RevB = 1
         };
 
-        var id = await _conn.InsertAsync<Guid, PersonWithTwoVersions>(p);
-        p.Id = id;
-
         Assert.That(
-            async () => await _conn.UpdateWithVersionAsync(p, expectedVersion: 1),
+            async () => await _conn.InsertAsync<Guid, PersonWithTwoVersions>(p),
             Throws.TypeOf<ArgumentException>().With.Message.Contains("multiple properties marked"));
     }
     
@@ -389,13 +383,33 @@ public class ConnectionExtensionsAsyncTests
         var updated = await _conn.UpdateAsync(loaded);
         var deleted = await _conn.DeleteAsync<Person>(key);
 
-        Assert.Multiple(async () =>
+        var after = await _conn.GetAsync<Person>(key);
+
+        Assert.Multiple(() =>
         {
             Assert.That(key, Is.Not.EqualTo(Guid.Empty));
             Assert.That(updated, Is.EqualTo(1));
             Assert.That(deleted, Is.EqualTo(1));
-            Assert.That(await _conn.GetAsync<Person>(key), Is.Null);
+            Assert.That(after, Is.Null);
         });
+    }
+
+    [Test]
+    public void DeleteListAsync_WithNullWhere_Throws()
+    {
+        Assert.That(
+            async () => await _conn.DeleteListAsync<Person>(null),
+            Throws.TypeOf<ArgumentException>()
+                .With.Message.Contains("requires at least one filter property"));
+    }
+
+    [Test]
+    public void DeleteListAsync_WithEmptyAnonymousObject_Throws()
+    {
+        Assert.That(
+            async () => await _conn.DeleteListAsync<Person>(new { }),
+            Throws.TypeOf<ArgumentException>()
+                .With.Message.Contains("requires at least one filter property"));
     }
 
     // ---- helpers ----

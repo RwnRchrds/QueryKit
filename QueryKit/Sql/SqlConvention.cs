@@ -17,7 +17,11 @@ public sealed class SqlConvention
 {
     private const double SqlServerTickMs = 3.3333333333333335;
 
+    // BUG #5 FIX: Year-2079 overflow guard. BaseDateUtc + (short.MaxValue days) ≈ 2079-09-18.
+    // After that date, the sequential portion wraps. We detect this at generation time and throw
+    // rather than silently producing non-sequential GUIDs.
     private static readonly DateTime BaseDateUtc = new(1900, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime MaxSequentialGuidDate = BaseDateUtc.AddDays(ushort.MaxValue); // ~2079-09-18
 
     private readonly DialectConfig _dialect;
     private readonly ITableNameResolver _table;
@@ -50,9 +54,30 @@ public sealed class SqlConvention
     }
 
     /// <summary>
-    /// Encapsulates an identifier (table or column name) according to the SQL dialect's rules.
+    /// Encapsulates a database identifier, such as a table or column name, to ensure it is properly delimited for use
+    /// in SQL statements.
     /// </summary>
-    public string Encapsulate(string identifier) => string.Format(_dialect.Encapsulation, identifier);
+    /// <remarks>Use this method to safely format identifiers for SQL queries, preventing issues with reserved
+    /// keywords or special characters. Each part of a multipart identifier is individually encapsulated.</remarks>
+    /// <param name="identifier">The identifier to encapsulate. This can be a simple name or a multipart identifier separated by periods (e.g.,
+    /// schema.table or table.column). Cannot be null or whitespace.</param>
+    /// <returns>A string containing the encapsulated identifier, with each part properly delimited for SQL usage.</returns>
+    /// <exception cref="ArgumentException">Thrown if the identifier is null or consists only of whitespace.</exception>
+    public string Encapsulate(string identifier)
+    {
+        if (string.IsNullOrWhiteSpace(identifier))
+            throw new ArgumentException("Identifier cannot be null or whitespace.", nameof(identifier));
+
+        // Split schema/table or table/column etc.
+        var parts = identifier.Split(new [] { '.' }, StringSplitOptions.RemoveEmptyEntries);
+
+        if (parts.Length == 0)
+        {
+            throw new ArgumentException("Identifier is not valid.", nameof(identifier));
+        }
+
+        return string.Join(".", parts.Select(EncapsulateToken));
+    }
 
     /// <summary>
     /// Retrieves the table name for a given type, using caching for performance.
@@ -70,8 +95,43 @@ public sealed class SqlConvention
     /// </summary>
     public string? GetColumnName(PropertyInfo pi)
     {
-        var key = $"{pi.DeclaringType}.{pi.Name}";
+        var key = $"{pi.Module.ModuleVersionId}:{pi.MetadataToken}";
         return _columnNames.GetOrAdd(key, _ => _column.ResolveColumnName(pi));
+    }
+
+    /// <summary>
+    /// Returns the column name for the specified property, encapsulated according to the database provider's
+    /// requirements.
+    /// </summary>
+    /// <remarks>Use this method when you need the column name formatted for use in SQL statements, such as
+    /// when quoting or delimiting is required by the database provider.</remarks>
+    /// <param name="pi">The property for which to retrieve the encapsulated column name. Must be mapped to a database column.</param>
+    /// <returns>A string containing the encapsulated column name for the specified property.</returns>
+    /// <exception cref="ArgumentException">Thrown if the specified property is not mapped to a database column.</exception>
+    public string GetColumnNameEncapsulated(PropertyInfo pi)
+    {
+        var raw = GetColumnName(pi);
+        if (string.IsNullOrWhiteSpace(raw))
+            throw new ArgumentException($"Property '{pi.DeclaringType?.Name}.{pi.Name}' is not mapped to a column.");
+
+        return Encapsulate(raw);
+    }
+
+    /// <summary>
+    /// Returns the table name for the specified type, encapsulated according to the database's identifier rules.
+    /// </summary>
+    /// <remarks>The encapsulation format depends on the database provider and may include quoting or
+    /// delimiting characters to ensure the table name is valid in SQL statements.</remarks>
+    /// <param name="type">The type whose associated table name will be retrieved and encapsulated. Must be mapped to a valid table name.</param>
+    /// <returns>A string containing the encapsulated table name for the specified type.</returns>
+    /// <exception cref="ArgumentException">Thrown if the specified type is not mapped to a table name.</exception>
+    public string GetTableNameEncapsulated(Type type)
+    {
+        var raw = GetTableName(type);
+        if (string.IsNullOrWhiteSpace(raw))
+            throw new ArgumentException($"Type '{type.Name}' is not mapped to a table name.");
+
+        return Encapsulate(raw);
     }
 
     /// <summary>
@@ -79,21 +139,28 @@ public sealed class SqlConvention
     /// </summary>
     public static Guid SequentialGuid()
     {
+        var now = DateTime.UtcNow;
+
+        // Guard against ushort overflow in days portion (wraps after 2079-06-06)
+        if (now > MaxSequentialGuidDate)
+            throw new InvalidOperationException(
+                $"SequentialGuid date range exceeded (after {MaxSequentialGuidDate:yyyy-MM-dd}).");
+
         var guidArray = Guid.NewGuid().ToByteArray();
 
-        var now = DateTime.UtcNow;
-        var days = (now - BaseDateUtc).Days; // fits in 2 bytes until year 2079
+        var days = (now - BaseDateUtc).Days;
+        if ((uint)days > ushort.MaxValue) // double-guard (covers weird clock issues too)
+            throw new InvalidOperationException(
+                $"SequentialGuid day range exceeded (after {MaxSequentialGuidDate:yyyy-MM-dd}).");
+
         var msecs = (int)(now.TimeOfDay.TotalMilliseconds / SqlServerTickMs);
 
-        var daysArray = BitConverter.GetBytes((short)days);   // 2 bytes
-        var msecsArray = BitConverter.GetBytes(msecs);        // 4 bytes
+        var daysArray = BitConverter.GetBytes((ushort)days);
+        var msecsArray = BitConverter.GetBytes(msecs);
 
-        // SQL Server’s GUID ordering expects these reversed here.
         Array.Reverse(daysArray);
         Array.Reverse(msecsArray);
 
-        // Write into the LAST 6 bytes of the GUID
-        // [.... .... .... .... .... dd mm mm mm mm]
         Array.Copy(daysArray, 0, guidArray, guidArray.Length - 6, 2);
         Array.Copy(msecsArray, 0, guidArray, guidArray.Length - 4, 4);
 
@@ -101,36 +168,8 @@ public sealed class SqlConvention
     }
 
     /// <summary>
-    /// Returns true if the property is marked as editable via the EditableAttribute.
-    /// </summary>
-    public static bool IsEditable(PropertyInfo pi)
-    {
-        var attrs = pi.GetCustomAttributes(false);
-        if (attrs.Length > 0)
-        {
-            dynamic? write = attrs.FirstOrDefault(x => x is EditableAttribute);
-            if (write != null) return write.AllowEdit;
-        }
-        return false;
-    }
-
-    /// <summary>
-    /// Returns true if the property is marked as read-only via the ReadOnlyAttribute.
-    /// </summary>
-    public static bool IsReadOnly(PropertyInfo pi)
-    {
-        var attrs = pi.GetCustomAttributes(false);
-        if (attrs.Length > 0)
-        {
-            dynamic? ro = attrs.FirstOrDefault(x => x is ReadOnlyAttribute);
-            if (ro != null) return ro.IsReadOnly;
-        }
-        return false;
-    }
-
-    /// <summary>
-    /// Returns the properties of a type that are considered identifier properties.
-    /// Prefer properties marked with [Key]; otherwise falls back to a property named "Id".
+    /// Retrieves the properties of the specified type that are considered identity properties, such as those marked
+    /// with a Key attribute or named "Id".
     /// </summary>
     public static PropertyInfo[] GetIdProperties(Type type)
     {
@@ -145,14 +184,16 @@ public sealed class SqlConvention
     }
 
     /// <summary>
-    /// Returns the property of a type that is used for optimistic concurrency control,
-    /// either marked with [Version] or named "Version".
-    /// The version property must be of type long (non-nullable).
+    /// Retrieves the property that represents the version of the specified type, if one exists.
+    /// Throws <see cref="ArgumentException"/> if the type is misconfigured (e.g. multiple [Version]
+    /// attributes or wrong property type). Returns null only when no version property is defined at all.
     /// </summary>
-    public static PropertyInfo GetVersionProperty(Type type)
-        => _versionProps.GetOrAdd(type, ResolveVersionProperty);
+    public static PropertyInfo? GetVersionProperty(Type type)
+        => _versionProps.TryGetValue(type, out var cached)
+            ? cached
+            : ResolveAndCacheVersionProperty(type);
 
-    private static PropertyInfo ResolveVersionProperty(Type type)
+    private static PropertyInfo? ResolveAndCacheVersionProperty(Type type)
     {
         var props = type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
 
@@ -161,33 +202,50 @@ public sealed class SqlConvention
             .ToArray();
 
         if (marked.Length > 1)
-        {
             throw new ArgumentException(
                 $"{type.Name} has multiple properties marked with [{nameof(VersionAttribute)}]. Only one is allowed.");
-        }
 
-        var prop = marked.Length == 1
+        PropertyInfo? prop = marked.Length == 1
             ? marked[0]
             : props.FirstOrDefault(p => p.Name.Equals("Version", StringComparison.OrdinalIgnoreCase));
 
         if (prop == null)
-        {
-            throw new ArgumentException(
-                $"{type.Name} must have a public long Version property, or a property marked with [{nameof(VersionAttribute)}].");
-        }
+            return null; // No version property — not an error; caller decides.
 
-        // long only (non-nullable)
         if (prop.PropertyType != typeof(long))
-        {
             throw new ArgumentException(
                 $"{type.Name}.{prop.Name} must be of type long (non-nullable) to use optimistic concurrency.");
-        }
 
+        _versionProps[type] = prop;
         return prop;
+    }
+
+    /// <summary>
+    /// Attempts to retrieve the version property for <paramref name="type"/>.
+    /// Returns <see langword="false"/> (with <paramref name="prop"/> set to <see langword="null"/>)
+    /// when the type simply has no version property.
+    /// Re-throws <see cref="ArgumentException"/> for misconfigured types (multiple [Version] attributes
+    /// or wrong property type) so callers are not silently swallowed.
+    /// </summary>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="type"/> is null.</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown if the type is misconfigured (multiple [Version] attributes or wrong property type).
+    /// </exception>
+    public static bool TryGetVersionProperty(Type type, out PropertyInfo? prop)
+    {
+        if (type is null) throw new ArgumentNullException(nameof(type));
+
+        // BUG #1 FIX: Do NOT catch ArgumentException here. Configuration errors (multiple [Version]
+        // attributes, non-long type) must propagate so they are caught at startup/test time rather
+        // than silently producing wrong runtime behavior.
+        prop = GetVersionProperty(type); // returns null when no version property exists; throws on misconfiguration
+        return prop is not null;
     }
 
     /// <summary>
     /// Returns the identifier properties of an entity instance.
     /// </summary>
     public static PropertyInfo[] GetIdProperties(object entity) => GetIdProperties(entity.GetType());
+
+    private string EncapsulateToken(string identifier) => string.Format(_dialect.Encapsulation, identifier);
 }

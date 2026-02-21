@@ -16,6 +16,7 @@ namespace QueryKit.Extensions
 {
     /// <summary>
     /// Provides synchronous CRUD extension methods for <see cref="IDbConnection"/> using Dapper.
+    /// Parity with <see cref="ConnectionExtensionsAsync"/> (same SQL, quoting/encapsulation, allowlists, safeguards).
     /// </summary>
     public static class ConnectionExtensions
     {
@@ -27,7 +28,6 @@ namespace QueryKit.Extensions
         /// <summary>
         /// Sets the SQL dialect used for identifier quoting, identity retrieval, and paging SQL.
         /// </summary>
-        /// <param name="dialect">The dialect to use (e.g., <see cref="Dialect.SQLServer"/>).</param>
         public static void UseDialect(Dialect dialect)
         {
             Config = DialectConfig.Create(dialect);
@@ -45,19 +45,20 @@ namespace QueryKit.Extensions
         private static readonly ConcurrentDictionary<(Type, string), Dictionary<string, string>> ColumnMapCache = new();
 
         /// <summary>
-        /// Builds an ascending order by expression tuple for use with GetList.
+        /// Builds an ascending order-by tuple for use with GetList.
         /// </summary>
-        public static (Expression<Func<T, object>>, bool) OrderByAscending<T>(Expression<Func<T, object>> e) => (e, false);
+        public static (Expression<Func<T, object>> Body, bool Descending) OrderByAscending<T>(Expression<Func<T, object>> e) => (e, false);
 
         /// <summary>
-        /// Builds a descending order by expression tuple for use with GetList.
+        /// Builds a descending order-by tuple for use with GetList.
         /// </summary>
-        public static (Expression<Func<T, object>>, bool) OrderByDescending<T>(Expression<Func<T, object>> e) => (e, true);
+        public static (Expression<Func<T, object>> Body, bool Descending) OrderByDescending<T>(Expression<Func<T, object>> e) => (e, true);
 
         /// <summary>
         /// Retrieves a single entity of type <typeparamref name="T"/> by its primary key.
         /// </summary>
-        public static T? Get<T>(this IDbConnection connection, object id, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static T? Get<T>(this IDbConnection connection, object id,
+            IDbTransaction? transaction = null, int? commandTimeout = null)
         {
             var conv = NewConvention();
             var builder = NewBuilder(conv);
@@ -67,7 +68,7 @@ namespace QueryKit.Extensions
             if (idProps == null || idProps.Length == 0)
                 throw new ArgumentException("Get<T> requires an entity with a [Key] or Id property.");
 
-            var table = conv.GetTableName(currentType);
+            var table = conv.GetTableNameEncapsulated(currentType);
 
             var sb = new StringBuilder();
             sb.Append("Select ");
@@ -77,7 +78,7 @@ namespace QueryKit.Extensions
             for (int i = 0; i < idProps.Length; i++)
             {
                 if (i > 0) sb.Append(" and ");
-                sb.AppendFormat("{0} = @{1}", conv.GetColumnName(idProps[i]), idProps[i].Name);
+                sb.AppendFormat("{0} = @{1}", conv.GetColumnNameEncapsulated(idProps[i]), idProps[i].Name);
             }
 
             var dyn = new DynamicParameters();
@@ -91,9 +92,7 @@ namespace QueryKit.Extensions
                 {
                     var val = id.GetType().GetProperty(p.Name);
                     if (val == null)
-                    {
                         throw new ArgumentException($"Missing key property '{p.Name}' on id object for {typeof(T).Name}.");
-                    }
                     dyn.Add("@" + p.Name, val.GetValue(id, null));
                 }
             }
@@ -101,7 +100,7 @@ namespace QueryKit.Extensions
             if (Debugger.IsAttached)
                 Trace.WriteLine($"Get<{currentType.Name}>: {sb} with Id: {id}");
 
-            return connection.Query<T>(sb.ToString(), dyn, transaction, buffered: true, commandTimeout).FirstOrDefault();
+            return connection.Query<T>(Cmd(sb.ToString(), dyn, transaction, commandTimeout)).FirstOrDefault();
         }
 
         /// <summary>
@@ -111,8 +110,7 @@ namespace QueryKit.Extensions
             string storedProcedureName, object? parameters = null,
             IDbTransaction? transaction = null, int? commandTimeout = null)
         {
-            var result = connection.Query<T>(storedProcedureName, parameters, transaction, buffered: true,
-                commandTimeout, CommandType.StoredProcedure);
+            var result = connection.Query<T>(StoredProc(storedProcedureName, parameters, transaction, commandTimeout));
             return result.ToList();
         }
 
@@ -129,7 +127,7 @@ namespace QueryKit.Extensions
             var builder = NewBuilder(conv);
 
             var currentType = typeof(T);
-            var table = conv.GetTableName(currentType);
+            var table = conv.GetTableNameEncapsulated(currentType);
 
             var sb = new StringBuilder();
             var whereProps = GetAllProperties(whereConditions)?.ToArray();
@@ -147,6 +145,7 @@ namespace QueryKit.Extensions
             if (orderBy.Length > 0)
             {
                 var cols = new List<string>(orderBy.Length);
+
                 foreach (var (body, desc) in orderBy)
                 {
                     var me =
@@ -156,9 +155,10 @@ namespace QueryKit.Extensions
                     if (me?.Member is not PropertyInfo prop)
                         throw new ArgumentException("OrderBy must be a property access, e.g., x => x.LastName.");
 
-                    var col = conv.GetColumnName(prop);
+                    var col = conv.GetColumnNameEncapsulated(prop);
                     if (string.IsNullOrEmpty(col))
                         throw new ArgumentException($"Property '{prop.Name}' is not mapped for {typeof(T).Name}.");
+
                     cols.Add(desc ? $"{col} DESC" : $"{col} ASC");
                 }
 
@@ -168,7 +168,7 @@ namespace QueryKit.Extensions
             if (Debugger.IsAttached)
                 Trace.WriteLine($"GetList<{currentType.Name}>: {sb}");
 
-            return connection.Query<T>(sb.ToString(), whereConditions, transaction, buffered: true, commandTimeout);
+            return connection.Query<T>(Cmd(sb.ToString(), whereConditions, transaction, commandTimeout));
         }
 
         /// <summary>
@@ -185,7 +185,7 @@ namespace QueryKit.Extensions
             var builder = NewBuilder(conv);
 
             var currentType = typeof(T);
-            var table = conv.GetTableName(currentType);
+            var table = conv.GetTableNameEncapsulated(currentType);
 
             var sb = new StringBuilder();
             sb.Append("Select ");
@@ -203,26 +203,28 @@ namespace QueryKit.Extensions
 
             if (!string.IsNullOrWhiteSpace(orderBy))
             {
-                var allowed = BuildAllowedColumnMap<T>(conv);
+                Dictionary<string, string> allowed = BuildAllowedColumnMap<T>(conv);
                 var validated = new List<string>();
-                var parts = orderBy!.Split(',');
+                var parts = orderBy.Split(',');
 
-                foreach (var rawToken in parts)
+                for (int i = 0; i < parts.Length; i++)
                 {
-                    var token = rawToken.Trim();
-                    if (token.Length == 0) continue;
+                    var token = parts[i].Trim();
+                    if (string.IsNullOrEmpty(token)) continue;
 
                     var bits = token.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (bits.Length == 0) continue;
+
                     var rawCol = bits[0];
                     var norm = NormalizeIdentifier(rawCol);
                     if (!allowed.TryGetValue(norm, out var encapsulated))
-                        throw new ArgumentException($"Invalid ORDER BY column '{rawCol}' for {currentType.Name}.");
+                        throw new ArgumentException("Invalid ORDER BY column '" + rawCol + "' for " + currentType.Name + ".");
 
-                    var dir = (bits.Length > 1 ? bits[1] : "ASC").ToUpperInvariant();
+                    var dir = (bits.Length > 1 ? bits[1] : "ASC")?.ToUpperInvariant();
                     if (dir != "ASC" && dir != "DESC")
-                        throw new ArgumentException($"Invalid ORDER BY direction '{dir}'. Use ASC or DESC.");
+                        throw new ArgumentException("Invalid ORDER BY direction '" + dir + "'. Use ASC or DESC.");
 
-                    validated.Add($"{encapsulated} {dir}");
+                    validated.Add(encapsulated + " " + dir);
                 }
 
                 if (validated.Count > 0)
@@ -232,7 +234,7 @@ namespace QueryKit.Extensions
             if (Debugger.IsAttached)
                 Trace.WriteLine($"GetList<{currentType.Name}>: {sb}");
 
-            return connection.Query<T>(sb.ToString(), parameters, transaction, buffered: true, commandTimeout);
+            return connection.Query<T>(Cmd(sb.ToString(), parameters, transaction, commandTimeout));
         }
 
         /// <summary>
@@ -246,13 +248,18 @@ namespace QueryKit.Extensions
         /// <summary>
         /// Executes a paged query using dialect-specific pagination.
         /// </summary>
-        public static IEnumerable<T> GetListPaged<T>(this IDbConnection connection, int pageNumber, int rowsPerPage, string conditions, string? orderBy, object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static IEnumerable<T> GetListPaged<T>(this IDbConnection connection, int pageNumber,
+            int rowsPerPage, string conditions, string? orderBy, object? parameters = null,
+            IDbTransaction? transaction = null, int? commandTimeout = null)
         {
             if (string.IsNullOrEmpty(Config.PagedListSql))
                 throw new NotSupportedException("GetListPaged is not supported for the current SQL dialect.");
 
             if (pageNumber < 1)
                 throw new ArgumentOutOfRangeException(nameof(pageNumber), "Page number must be >= 1.");
+
+            if (rowsPerPage < 1)
+                throw new ArgumentOutOfRangeException(nameof(rowsPerPage), "Rows per page must be >= 1.");
 
             var conv = NewConvention();
 
@@ -261,40 +268,40 @@ namespace QueryKit.Extensions
             if (idProps == null || idProps.Length == 0)
                 throw new ArgumentException("Entity must have at least one [Key] property.");
 
-            var table = conv.GetTableName(currentType);
+            var table = conv.GetTableNameEncapsulated(currentType);
 
-            // default to PK when not provided
+            // Choose default ORDER BY if not provided (CLR name, then translated/validated through allowlist)
             if (string.IsNullOrWhiteSpace(orderBy))
+                orderBy = idProps.First().Name;
+
+            var allowed = BuildAllowedColumnMap<T>(conv);
+            var validated = new List<string>();
+
+            foreach (var token in orderBy.Split(','))
             {
-                orderBy = conv.GetColumnName(idProps.First());
-                if (string.IsNullOrEmpty(orderBy))
-                    throw new ArgumentException($"Primary key for {typeof(T).Name} is not mapped to a column.");
+                var t = token.Trim();
+                if (t.Length == 0) continue;
+
+                var bits = t.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (bits.Length == 0) continue;
+
+                var raw = bits[0];
+                var norm = NormalizeIdentifier(raw);
+
+                if (!allowed.TryGetValue(norm, out var encapsulated))
+                    throw new ArgumentException($"Invalid ORDER BY column '{raw}' for {typeof(T).Name}.");
+
+                var dir = (bits.Length > 1 ? bits[1] : "ASC").ToUpperInvariant();
+                if (dir != "ASC" && dir != "DESC")
+                    throw new ArgumentException($"Invalid ORDER BY direction '{dir}'. Use ASC or DESC.");
+
+                validated.Add($"{encapsulated} {dir}");
             }
-            else
-            {
-                // validate and normalize
-                var allowed = BuildAllowedColumnMap<T>(conv);
-                var validated = new List<string>();
-                foreach (var token in orderBy!.Split(','))
-                {
-                    var t = token.Trim();
-                    if (t.Length == 0) continue;
 
-                    var bits = t.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                    var raw = bits[0];
-                    var norm = NormalizeIdentifier(raw);
-                    if (!allowed.TryGetValue(norm, out var encapsulated))
-                        throw new ArgumentException($"Invalid ORDER BY column '{raw}' for {currentType.Name}.");
+            if (validated.Count == 0)
+                throw new ArgumentException($"ORDER BY could not be resolved for {typeof(T).Name}.");
 
-                    var dir = (bits.Length > 1 ? bits[1] : "ASC").ToUpperInvariant();
-                    if (dir != "ASC" && dir != "DESC")
-                        throw new ArgumentException($"Invalid ORDER BY direction '{dir}'. Use ASC or DESC.");
-
-                    validated.Add($"{encapsulated} {dir}");
-                }
-
-                orderBy = string.Join(", ", validated);
-            }
+            orderBy = string.Join(", ", validated);
 
             var selectCols = new StringBuilder();
             NewBuilder(conv).BuildSelect(selectCols, SqlBuilder.GetScaffoldableProperties<T>());
@@ -311,32 +318,36 @@ namespace QueryKit.Extensions
                 if (!conditions.TrimStart().StartsWith("where", StringComparison.OrdinalIgnoreCase))
                     conditions = " where " + conditions;
             }
+
             var query = sql.Replace("{WhereClause}", conditions);
 
             if (Debugger.IsAttached)
                 Trace.WriteLine($"GetListPaged<{currentType.Name}>: {query}");
 
-            return connection.Query<T>(query, parameters, transaction, buffered: true, commandTimeout);
+            return connection.Query<T>(Cmd(query, parameters, transaction, commandTimeout));
         }
 
         /// <summary>
         /// Inserts a new entity and returns the generated primary key as an object.
+        /// For strongly-typed keys prefer the generic overload.
         /// </summary>
-        public static object? Insert<T>(this IDbConnection connection, T entityToInsert, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static object? Insert<T>(this IDbConnection connection, T entityToInsert,
+            IDbTransaction? transaction = null, int? commandTimeout = null)
         {
-            return Insert<object, T>(connection, entityToInsert, transaction, commandTimeout);
+            return connection.Insert<object, T>(entityToInsert, transaction, commandTimeout);
         }
 
         /// <summary>
         /// Inserts a new entity and returns the generated primary key as <typeparamref name="TKey"/>.
         /// </summary>
-        public static TKey? Insert<TKey, T>(this IDbConnection connection, T entityToInsert, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static TKey? Insert<TKey, T>(this IDbConnection connection, T entityToInsert,
+            IDbTransaction? transaction = null, int? commandTimeout = null)
         {
             var conv = NewConvention();
             var builder = NewBuilder(conv);
 
             var type = typeof(T);
-            var table = conv.GetTableName(type);
+            var table = conv.GetTableNameEncapsulated(type);
             var idProps = SqlConvention.GetIdProperties(type);
 
             if (idProps == null || idProps.Length == 0)
@@ -347,7 +358,6 @@ namespace QueryKit.Extensions
             var isGuidKey = keyType == typeof(Guid);
             var isStringKey = keyType == typeof(string);
 
-            // Pre-generate Guid/string keys if needed
             if (isGuidKey)
             {
                 var val = (Guid)(keyProperty.GetValue(entityToInsert, null) ?? Guid.Empty);
@@ -361,6 +371,14 @@ namespace QueryKit.Extensions
                     throw new ArgumentException("String key must be supplied before calling Insert when using a string [Key].");
             }
 
+            // Parity: initialize Version to 1 if present and currently 0
+            if (SqlConvention.TryGetVersionProperty(type, out var versionProp))
+            {
+                var current = (long)(versionProp!.GetValue(entityToInsert) ?? 0L);
+                if (current == 0L)
+                    versionProp.SetValue(entityToInsert, 1L);
+            }
+
             var sbCols = new StringBuilder();
             var sbVals = new StringBuilder();
             builder.BuildInsertParameters<T>(sbCols);
@@ -369,7 +387,6 @@ namespace QueryKit.Extensions
             var sql = new StringBuilder();
             sql.AppendFormat("insert into {0} ({1}) values ({2})", table, sbCols, sbVals);
 
-            // Identity retrieval for numeric identity keys
             if (!isGuidKey && !isStringKey)
             {
                 if (string.IsNullOrEmpty(Config.IdentitySql))
@@ -377,28 +394,42 @@ namespace QueryKit.Extensions
 
                 sql.Append("; ");
                 sql.Append(Config.IdentitySql);
+
+                if (Debugger.IsAttached)
+                    Trace.WriteLine($"Insert<{type.Name}>: {sql}");
+
+                var id = connection.ExecuteScalar(Cmd(sql.ToString(), entityToInsert, transaction, commandTimeout));
+                if (id == null || id is DBNull) return default;
+
+                var targetType = Nullable.GetUnderlyingType(typeof(TKey)) ?? typeof(TKey);
+
+                try
+                {
+                    if (targetType == typeof(long)) return (TKey)(object)Convert.ToInt64(id);
+                    if (targetType == typeof(int)) return (TKey)(object)Convert.ToInt32(id);
+                    if (targetType == typeof(short)) return (TKey)(object)Convert.ToInt16(id);
+
+                    return (TKey)Convert.ChangeType(id, targetType);
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidCastException(
+                        $"Could not convert identity value '{id}' ({id.GetType().FullName}) to {typeof(TKey).FullName}.", ex);
+                }
             }
 
             if (Debugger.IsAttached)
                 Trace.WriteLine($"Insert<{type.Name}>: {sql}");
 
-            if (!isGuidKey && !isStringKey)
-            {
-                var id = connection.ExecuteScalar(sql.ToString(), entityToInsert, transaction, commandTimeout);
-                if (id == null || id is DBNull) return default;
-                return (TKey)Convert.ChangeType(id, typeof(TKey));
-            }
-            else
-            {
-                connection.Execute(sql.ToString(), entityToInsert, transaction, commandTimeout);
-                return (TKey?)keyProperty.GetValue(entityToInsert, null);
-            }
+            connection.Execute(Cmd(sql.ToString(), entityToInsert, transaction, commandTimeout));
+            return (TKey?)keyProperty.GetValue(entityToInsert, null);
         }
 
         /// <summary>
         /// Updates an existing entity identified by its key property (or properties for composite keys).
         /// </summary>
-        public static int Update<T>(this IDbConnection connection, T entityToUpdate, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static int Update<T>(this IDbConnection connection, T entityToUpdate,
+            IDbTransaction? transaction = null, int? commandTimeout = null)
         {
             var conv = NewConvention();
             var builder = NewBuilder(conv);
@@ -408,7 +439,7 @@ namespace QueryKit.Extensions
             if (idProps == null || idProps.Length == 0)
                 throw new ArgumentException("Update<T> requires an entity with a [Key] or Id property.");
 
-            var table = conv.GetTableName(type);
+            var table = conv.GetTableNameEncapsulated(type);
 
             var sb = new StringBuilder();
             sb.AppendFormat("update {0} set ", table);
@@ -418,19 +449,76 @@ namespace QueryKit.Extensions
             for (int i = 0; i < idProps.Length; i++)
             {
                 if (i > 0) sb.Append(" and ");
-                sb.AppendFormat("{0} = @{1}", conv.GetColumnName(idProps[i]), idProps[i].Name);
+                sb.AppendFormat("{0} = @{1}", conv.GetColumnNameEncapsulated(idProps[i]), idProps[i].Name);
             }
 
             if (Debugger.IsAttached)
                 Trace.WriteLine($"Update<{type.Name}>: {sb}");
 
-            return connection.Execute(sb.ToString(), entityToUpdate, transaction, commandTimeout);
+            return connection.Execute(Cmd(sb.ToString(), entityToUpdate, transaction, commandTimeout));
+        }
+
+        /// <summary>
+        /// Updates an entity with optimistic concurrency using a version column.
+        /// The version is incremented automatically in the UPDATE statement.
+        /// </summary>
+        public static int UpdateWithVersion<T>(this IDbConnection connection, T entityToUpdate,
+            long expectedVersion, IDbTransaction? transaction = null, int? commandTimeout = null)
+        {
+            if (entityToUpdate == null) throw new ArgumentNullException(nameof(entityToUpdate));
+
+            var conv = NewConvention();
+            var builder = NewBuilder(conv);
+
+            var type = typeof(T);
+
+            var idProps = SqlConvention.GetIdProperties(type);
+            if (idProps == null || idProps.Length == 0)
+                throw new ArgumentException("UpdateWithVersion<T> requires an entity with a [Key] or Id property.");
+
+            var versionProp = SqlConvention.GetVersionProperty(type)
+                ?? throw new ArgumentException(
+                    $"{type.Name} must have a public long Version property or a property marked with [Version].");
+
+            var table = conv.GetTableNameEncapsulated(type);
+            var versionCol = conv.GetColumnNameEncapsulated(versionProp);
+
+            var sb = new StringBuilder();
+            sb.AppendFormat("update {0} set ", table);
+            int lengthBeforeSet = sb.Length;
+
+            builder.BuildUpdateSet(entityToUpdate, sb);
+
+            bool hasOtherColumns = sb.Length > lengthBeforeSet;
+
+            if (hasOtherColumns)
+                sb.AppendFormat(", {0} = {0} + 1", versionCol);
+            else
+                sb.AppendFormat("{0} = {0} + 1", versionCol);
+
+            sb.Append(" where ");
+            for (int i = 0; i < idProps.Length; i++)
+            {
+                if (i > 0) sb.Append(" and ");
+                sb.AppendFormat("{0} = @{1}", conv.GetColumnNameEncapsulated(idProps[i]), idProps[i].Name);
+            }
+
+            sb.AppendFormat(" and {0} = @ExpectedVersion", versionCol);
+
+            var p = new DynamicParameters(entityToUpdate);
+            p.Add("@ExpectedVersion", expectedVersion);
+
+            if (Debugger.IsAttached)
+                Trace.WriteLine($"UpdateWithVersion<{type.Name}>: {sb}");
+
+            return connection.Execute(Cmd(sb.ToString(), p, transaction, commandTimeout));
         }
 
         /// <summary>
         /// Deletes an entity by using its key property values from the passed instance.
         /// </summary>
-        public static int Delete<T>(this IDbConnection connection, T entityToDelete, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static int Delete<T>(this IDbConnection connection, T entityToDelete,
+            IDbTransaction? transaction = null, int? commandTimeout = null)
         {
             var conv = NewConvention();
 
@@ -439,26 +527,28 @@ namespace QueryKit.Extensions
             if (idProps == null || idProps.Length == 0)
                 throw new ArgumentException("Delete<T> requires an entity with a [Key] or Id property.");
 
-            var table = conv.GetTableName(type);
+            var table = conv.GetTableNameEncapsulated(type);
 
             var sb = new StringBuilder();
             sb.AppendFormat("delete from {0} where ", table);
+
             for (int i = 0; i < idProps.Length; i++)
             {
                 if (i > 0) sb.Append(" and ");
-                sb.AppendFormat("{0} = @{1}", conv.GetColumnName(idProps[i]), idProps[i].Name);
+                sb.AppendFormat("{0} = @{1}", conv.GetColumnNameEncapsulated(idProps[i]), idProps[i].Name);
             }
 
             if (Debugger.IsAttached)
                 Trace.WriteLine($"Delete<{type.Name}>: {sb}");
 
-            return connection.Execute(sb.ToString(), entityToDelete, transaction, commandTimeout);
+            return connection.Execute(Cmd(sb.ToString(), entityToDelete, transaction, commandTimeout));
         }
 
         /// <summary>
         /// Deletes an entity by its primary key value (or composite key values).
         /// </summary>
-        public static int Delete<T>(this IDbConnection connection, object id, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static int Delete<T>(this IDbConnection connection, object id,
+            IDbTransaction? transaction = null, int? commandTimeout = null)
         {
             var conv = NewConvention();
 
@@ -476,47 +566,56 @@ namespace QueryKit.Extensions
             {
                 foreach (var p in idProps)
                 {
-                    var val = id.GetType().GetProperty(p.Name)!.GetValue(id, null);
-                    dyn.Add("@" + p.Name, val);
+                    var idProp = id.GetType().GetProperty(p.Name);
+                    if (idProp == null)
+                        throw new ArgumentException($"Missing key property '{p.Name}' on id object for {typeof(T).Name}.");
+                    dyn.Add("@" + p.Name, idProp.GetValue(id, null));
                 }
             }
 
-            var table = conv.GetTableName(type);
+            var table = conv.GetTableNameEncapsulated(type);
+
             var sb = new StringBuilder();
             sb.AppendFormat("delete from {0} where ", table);
 
             for (int i = 0; i < idProps.Length; i++)
             {
                 if (i > 0) sb.Append(" and ");
-                sb.AppendFormat("{0} = @{1}", conv.GetColumnName(idProps[i]), idProps[i].Name);
+                sb.AppendFormat("{0} = @{1}", conv.GetColumnNameEncapsulated(idProps[i]), idProps[i].Name);
             }
 
             if (Debugger.IsAttached)
                 Trace.WriteLine($"Delete<{type.Name}> by id: {sb}");
 
-            return connection.Execute(sb.ToString(), dyn, transaction, commandTimeout);
+            return connection.Execute(Cmd(sb.ToString(), dyn, transaction, commandTimeout));
         }
 
         /// <summary>
         /// Deletes multiple rows using an anonymous object for equality-based filters.
         /// </summary>
-        public static int DeleteList<T>(this IDbConnection connection, object? whereConditions, IDbTransaction? transaction = null, int? commandTimeout = null)
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="whereConditions"/> is null or has no properties, to prevent
+        /// accidental full-table deletes. Use the string-conditions overload with conditions = "1=1"
+        /// if you intentionally want to delete all rows.
+        /// </exception>
+        public static int DeleteList<T>(this IDbConnection connection, object? whereConditions,
+            IDbTransaction? transaction = null, int? commandTimeout = null)
         {
+            var whereProps = GetAllProperties(whereConditions)?.ToArray();
+            if (whereProps == null || whereProps.Length == 0)
+                throw new ArgumentException(
+                    $"DeleteList<{typeof(T).Name}> requires at least one filter property to prevent accidental full-table deletes. " +
+                    "To delete all rows intentionally, use the string-conditions overload with conditions = \"1=1\".");
+
             var conv = NewConvention();
             var builder = NewBuilder(conv);
 
             var type = typeof(T);
-            var table = conv.GetTableName(type);
-            var whereProps = GetAllProperties(whereConditions)?.ToArray();
+            var table = conv.GetTableNameEncapsulated(type);
 
             var sb = new StringBuilder();
-            sb.AppendFormat("delete from {0}", table);
-
-            if (whereProps != null && whereProps.Any())
-            {
-                sb.Append(" where ");
-                builder.BuildWhere<T>(sb, whereProps, whereConditions);
-            }
+            sb.AppendFormat("delete from {0} where ", table);
+            builder.BuildWhere<T>(sb, whereProps, whereConditions);
 
             if (Debugger.IsAttached)
                 Trace.WriteLine($"DeleteList<{type.Name}>: {sb}");
@@ -527,12 +626,19 @@ namespace QueryKit.Extensions
         /// <summary>
         /// Deletes multiple rows using a raw SQL WHERE fragment with optional parameters.
         /// </summary>
-        public static int DeleteList<T>(this IDbConnection connection, string conditions, object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static int DeleteList<T>(this IDbConnection connection, string conditions,
+            object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null)
         {
+            if (string.IsNullOrWhiteSpace(conditions))
+                throw new ArgumentException(
+                    $"DeleteList<{typeof(T).Name}> requires at least one filter property to prevent accidental full-table deletes. " +
+                    "To delete all rows intentionally, use the string-conditions overload with conditions = \"1=1\".",
+                    nameof(conditions));
+
             var conv = NewConvention();
 
             var type = typeof(T);
-            var table = conv.GetTableName(type);
+            var table = conv.GetTableNameEncapsulated(type);
 
             var sb = new StringBuilder();
             sb.AppendFormat("delete from {0}", table);
@@ -549,18 +655,19 @@ namespace QueryKit.Extensions
             if (Debugger.IsAttached)
                 Trace.WriteLine($"DeleteList<{type.Name}>: {sb}");
 
-            return connection.Execute(sb.ToString(), parameters, transaction, commandTimeout);
+            return connection.Execute(Cmd(sb.ToString(), parameters, transaction, commandTimeout));
         }
 
         /// <summary>
         /// Returns the number of rows that match an optional WHERE clause.
         /// </summary>
-        public static int RecordCount<T>(this IDbConnection connection, string conditions = "", object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null)
+        public static int RecordCount<T>(this IDbConnection connection, string conditions = "",
+            object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null)
         {
             var conv = NewConvention();
 
             var type = typeof(T);
-            var table = conv.GetTableName(type);
+            var table = conv.GetTableNameEncapsulated(type);
 
             var sb = new StringBuilder();
             sb.AppendFormat("Select count(1) from {0}", table);
@@ -577,7 +684,7 @@ namespace QueryKit.Extensions
             if (Debugger.IsAttached)
                 Trace.WriteLine($"RecordCount<{type.Name}>: {sb}");
 
-            return connection.ExecuteScalar<int>(sb.ToString(), parameters, transaction, commandTimeout);
+            return connection.ExecuteScalar<int>(Cmd(sb.ToString(), parameters, transaction, commandTimeout));
         }
 
         // ---- helpers ----
@@ -588,15 +695,19 @@ namespace QueryKit.Extensions
             return ColumnMapCache.GetOrAdd(key, _ =>
             {
                 var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
                 foreach (var p in SqlBuilder.GetScaffoldableProperties<T>())
                 {
-                    var col = conv.GetColumnName(p);
-                    if (!string.IsNullOrEmpty(col))
-                    {
-                        map[NormalizeIdentifier(col)] = col;
-                        map[NormalizeIdentifier(p.Name)] = col;
-                    } 
+                    var raw = conv.GetColumnName(p);
+                    if (string.IsNullOrWhiteSpace(raw)) continue;
+
+                    var encapsulated = conv.Encapsulate(raw);
+
+                    // Allow either the raw column name or CLR property name as input
+                    map[NormalizeIdentifier(raw)] = encapsulated;
+                    map[NormalizeIdentifier(p.Name)] = encapsulated;
                 }
+
                 return map;
             });
         }
@@ -606,10 +717,12 @@ namespace QueryKit.Extensions
             s = s.Trim();
             var lastDot = s.LastIndexOf('.');
             if (lastDot >= 0 && lastDot < s.Length - 1) s = s.Substring(lastDot + 1);
+
             if ((s.StartsWith("[") && s.EndsWith("]")) ||
                 (s.StartsWith("\"") && s.EndsWith("\"")) ||
                 (s.StartsWith("`") && s.EndsWith("`")))
                 s = s.Substring(1, s.Length - 2);
+
             return s.ToLowerInvariant();
         }
 
@@ -617,5 +730,23 @@ namespace QueryKit.Extensions
         {
             return obj?.GetType().GetProperties();
         }
+
+        private static CommandDefinition Cmd(string sql, object? param, IDbTransaction? tx, int? timeout) => new(
+            commandText: sql,
+            parameters: param,
+            transaction: tx,
+            commandTimeout: timeout,
+            commandType: null,
+            flags: CommandFlags.Buffered
+        );
+
+        private static CommandDefinition StoredProc(string storedProcedureName, object? param, IDbTransaction? tx, int? timeout) => new(
+            commandText: storedProcedureName,
+            parameters: param,
+            transaction: tx,
+            commandTimeout: timeout,
+            commandType: CommandType.StoredProcedure,
+            flags: CommandFlags.Buffered
+        );
     }
 }

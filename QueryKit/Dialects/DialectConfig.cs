@@ -47,7 +47,7 @@
             {
                 case Dialect.PostgreSQL:
                     return new DialectConfig(dialect, "\"{0}\"",
-                        "SELECT LASTVAL) AS id".Replace(")", "(") /* keep exact return 'id' */,
+                        "SELECT LASTVAL() AS id",
                         "Select {SelectColumns} from {TableName} {WhereClause} Order By {OrderBy} LIMIT {RowsPerPage} OFFSET (({PageNumber}-1) * {RowsPerPage})");
                 case Dialect.SQLite:
                     return new DialectConfig(dialect, "\"{0}\"",
@@ -56,7 +56,7 @@
                 case Dialect.MySQL:
                     return new DialectConfig(dialect, "`{0}`",
                         "SELECT LAST_INSERT_ID() AS id",
-                        "Select {SelectColumns} from {TableName} {WhereClause} Order By {OrderBy} LIMIT {Offset},{RowsPerPage}");
+                        "Select {SelectColumns} from {TableName} {WhereClause} Order By {OrderBy} LIMIT {RowsPerPage} OFFSET (({PageNumber}-1) * {RowsPerPage})");
                 case Dialect.Oracle:
                     return new DialectConfig(dialect, "\"{0}\"",
                         "",

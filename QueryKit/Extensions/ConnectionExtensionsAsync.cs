@@ -10,7 +10,6 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Dapper;
-using QueryKit.Interfaces;
 using QueryKit.Sql;
 
 namespace QueryKit.Extensions
@@ -31,14 +30,6 @@ namespace QueryKit.Extensions
         /// <summary>
         /// Asynchronously retrieves a single entity by its primary key.
         /// </summary>
-        /// <typeparam name="T">The entity type to map results to.</typeparam>
-        /// <param name="connection">The database connection.</param>
-        /// <param name="id">The primary key value. For composite keys, provide an object with matching property names.</param>
-        /// <param name="transaction">Optional transaction to enlist commands in.</param>
-        /// <param name="commandTimeout">Optional command timeout in seconds.</param>
-        /// <param name="cancellationToken"></param>
-        /// <returns>A task producing the entity if found; otherwise <c>null</c>.</returns>
-        /// <exception cref="ArgumentException">Thrown when no key property can be located.</exception>
         public static async Task<T?> GetAsync<T>(this IDbConnection connection, object id,
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
@@ -51,7 +42,7 @@ namespace QueryKit.Extensions
             if (idProps == null || idProps.Length == 0)
                 throw new ArgumentException("GetAsync<T> requires an entity with a [Key] or Id property.");
 
-            var table = conv.GetTableName(currentType);
+            var table = conv.GetTableNameEncapsulated(currentType);
 
             var sb = new StringBuilder();
             sb.Append("Select ");
@@ -61,7 +52,7 @@ namespace QueryKit.Extensions
             for (int i = 0; i < idProps.Length; i++)
             {
                 if (i > 0) sb.Append(" and ");
-                sb.AppendFormat("{0} = @{1}", conv.GetColumnName(idProps[i]), idProps[i].Name);
+                sb.AppendFormat("{0} = @{1}", conv.GetColumnNameEncapsulated(idProps[i]), idProps[i].Name);
             }
 
             var dyn = new DynamicParameters();
@@ -75,11 +66,8 @@ namespace QueryKit.Extensions
                 {
                     var val = id.GetType().GetProperty(p.Name);
                     if (val == null)
-                    {
                         throw new ArgumentException(
                             $"Missing key property '{p.Name}' on id object for {typeof(T).Name}.");
-                    }
-
                     dyn.Add("@" + p.Name, val.GetValue(id, null));
                 }
             }
@@ -95,14 +83,6 @@ namespace QueryKit.Extensions
         /// <summary>
         /// Asynchronously executes a stored procedure and maps the results to a list of entities.
         /// </summary>
-        /// <param name="connection">The database connection.</param>
-        /// <param name="storedProcedureName">The name of the stored procedure to execute.</param>
-        /// <param name="parameters"></param>
-        /// <param name="transaction"></param>
-        /// <param name="commandTimeout"></param>
-        /// <param name="cancellationToken"></param>
-        /// <typeparam name="T">The entity type to map results to.</typeparam>
-        /// <returns></returns>
         public static async Task<IList<T>> ExecuteStoredProcedureAsync<T>(this IDbConnection connection,
             string storedProcedureName, object? parameters = null,
             IDbTransaction? transaction = null, int? commandTimeout = null,
@@ -116,14 +96,6 @@ namespace QueryKit.Extensions
         /// <summary>
         /// Asynchronously queries entities using an anonymous object for equality-based filters.
         /// </summary>
-        /// <typeparam name="T">The entity type to map results to.</typeparam>
-        /// <param name="connection">The database connection.</param>
-        /// <param name="whereConditions">Anonymous object of filter properties/values.</param>
-        /// <param name="transaction">Optional transaction to enlist commands in.</param>
-        /// <param name="commandTimeout">Optional command timeout in seconds.</param>
-        /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <param name="orderBy">A function of columns to sort by.</param>
-        /// <returns>A task producing the sequence of matching entities.</returns>
         public static Task<IEnumerable<T>> GetListAsync<T>(this IDbConnection connection, object? whereConditions,
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default,
@@ -133,7 +105,7 @@ namespace QueryKit.Extensions
             var builder = ConnectionExtensions.NewBuilder(conv);
 
             var currentType = typeof(T);
-            var table = conv.GetTableName(currentType);
+            var table = conv.GetTableNameEncapsulated(currentType);
 
             var sb = new StringBuilder();
             var whereProps = GetAllProperties(whereConditions)?.ToArray();
@@ -161,7 +133,7 @@ namespace QueryKit.Extensions
                     if (me?.Member is not PropertyInfo prop)
                         throw new ArgumentException("OrderBy must be a property access, e.g., x => x.LastName.");
 
-                    var col = conv.GetColumnName(prop);
+                    var col = conv.GetColumnNameEncapsulated(prop);
                     if (string.IsNullOrEmpty(col))
                         throw new ArgumentException($"Property '{prop.Name}' is not mapped for {typeof(T).Name}.");
                     cols.Add(desc ? $"{col} DESC" : $"{col} ASC");
@@ -180,15 +152,6 @@ namespace QueryKit.Extensions
         /// <summary>
         /// Asynchronously queries entities using a raw SQL <c>WHERE</c> fragment with optional parameters.
         /// </summary>
-        /// <typeparam name="T">The entity type to map results to.</typeparam>
-        /// <param name="connection">The database connection.</param>
-        /// <param name="conditions">A SQL <c>WHERE</c> fragment (with or without the <c>WHERE</c> keyword).</param>
-        /// <param name="orderBy">Columns to order by.</param>
-        /// <param name="parameters">Optional parameters object.</param>
-        /// <param name="transaction">Optional transaction to enlist commands in.</param>
-        /// <param name="commandTimeout">Optional command timeout in seconds.</param>
-        /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <returns>A task producing the sequence of matching entities.</returns>
         public static Task<IEnumerable<T>> GetListAsync<T>(this IDbConnection connection, string conditions,
             object? parameters = null, string? orderBy = null, IDbTransaction? transaction = null,
             int? commandTimeout = null, CancellationToken cancellationToken = default)
@@ -197,7 +160,7 @@ namespace QueryKit.Extensions
             var builder = ConnectionExtensions.NewBuilder(conv);
 
             var currentType = typeof(T);
-            var table = conv.GetTableName(currentType);
+            var table = conv.GetTableNameEncapsulated(currentType);
 
             var sb = new StringBuilder();
             sb.Append("Select ");
@@ -215,7 +178,6 @@ namespace QueryKit.Extensions
 
             if (!string.IsNullOrWhiteSpace(orderBy))
             {
-                // Validate and normalize the ORDER BY against T's columns
                 Dictionary<string, string> allowed = BuildAllowedColumnMap<T>(conv);
                 var validated = new List<string>();
                 var parts = orderBy?.Split(',');
@@ -257,10 +219,6 @@ namespace QueryKit.Extensions
         /// <summary>
         /// Asynchronously retrieves all entities from the mapped table.
         /// </summary>
-        /// <typeparam name="T">The entity type to map results to.</typeparam>
-        /// <param name="connection">The database connection.</param>
-        /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <returns>A task producing the sequence of all entities.</returns>
         public static Task<IEnumerable<T>> GetListAsync<T>(this IDbConnection connection,
             CancellationToken cancellationToken = default)
         {
@@ -270,17 +228,6 @@ namespace QueryKit.Extensions
         /// <summary>
         /// Asynchronously executes a paged query using dialect-specific pagination.
         /// </summary>
-        /// <typeparam name="T">The entity type to map results to.</typeparam>
-        /// <param name="connection">The database connection.</param>
-        /// <param name="pageNumber">1-based page number.</param>
-        /// <param name="rowsPerPage">Number of rows per page.</param>
-        /// <param name="conditions">A SQL <c>WHERE</c> fragment (with or without the <c>WHERE</c> keyword).</param>
-        /// <param name="orderBy">The <c>ORDER BY</c> clause (e.g., <c>"LastName asc"</c>).</param>
-        /// <param name="parameters">Optional parameters object.</param>
-        /// <param name="transaction">Optional transaction to enlist commands in.</param>
-        /// <param name="commandTimeout">Optional command timeout in seconds.</param>
-        /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <returns>A task producing the requested page of results.</returns>
         /// <exception cref="NotSupportedException">Thrown when paging is not supported for the current dialect.</exception>
         public static Task<IEnumerable<T>> GetListPagedAsync<T>(this IDbConnection connection, int pageNumber,
             int rowsPerPage, string conditions, string? orderBy, object? parameters = null,
@@ -293,6 +240,9 @@ namespace QueryKit.Extensions
             if (pageNumber < 1)
                 throw new ArgumentOutOfRangeException(nameof(pageNumber), "Page number must be >= 1.");
 
+            if (rowsPerPage < 1)
+                throw new ArgumentOutOfRangeException(nameof(rowsPerPage), "Rows per page must be >= 1.");
+
             var conv = ConnectionExtensions.NewConvention();
 
             var currentType = typeof(T);
@@ -300,41 +250,49 @@ namespace QueryKit.Extensions
             if (idProps == null || idProps.Length == 0)
                 throw new ArgumentException("Entity must have at least one [Key] property.");
 
-            var table = conv.GetTableName(currentType);
+            var table = conv.GetTableNameEncapsulated(currentType);
 
+            // Choose default ORDER BY if not provided
             if (string.IsNullOrWhiteSpace(orderBy))
             {
-                orderBy = conv.GetColumnName(idProps.First());
-                if (string.IsNullOrEmpty(orderBy))
-                    throw new ArgumentException($"Primary key for {typeof(T).Name} is not mapped to a column.");
+                // Use CLR name here, but then translate it through the allowlist below
+                orderBy = idProps.First().Name;
             }
-            else
+
+            var allowed = BuildAllowedColumnMap<T>(conv);
+            var validated = new List<string>();
+
+            foreach (var token in orderBy.Split(','))
             {
-                var allowed = BuildAllowedColumnMap<T>(conv);
-                var validated = new List<string>();
-                foreach (var token in orderBy!.Split(','))
+                var t = token.Trim();
+                if (t.Length == 0) continue;
+
+                var bits = t.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (bits.Length == 0) continue;
+
+                var raw = bits[0];
+                var norm = NormalizeIdentifier(raw);
+
+                if (!allowed.TryGetValue(norm, out var encapsulated))
                 {
-                    var t = token.Trim();
-                    if (t.Length == 0) continue;
-                    var bits = t.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                    var raw = bits[0];
-                    var norm = NormalizeIdentifier(raw);
-                    if (!allowed.TryGetValue(norm, out var encapsulated))
-                    {
-                        throw new ArgumentException($"Invalid ORDER BY column '{raw}' for {typeof(T).Name}.");
-                    }
-
-                    var dir = (bits.Length > 1 ? bits[1] : "ASC").ToUpperInvariant();
-                    if (dir != "ASC" && dir != "DESC")
-                    {
-                        throw new ArgumentException($"Invalid ORDER BY direction '{dir}'. Use ASC or DESC.");
-                    }
-
-                    validated.Add($"{encapsulated} {dir}");
+                    throw new ArgumentException($"Invalid ORDER BY column '{raw}' for {typeof(T).Name}.");
                 }
 
-                orderBy = string.Join(", ", validated);
+                var dir = (bits.Length > 1 ? bits[1] : "ASC").ToUpperInvariant();
+                if (dir != "ASC" && dir != "DESC")
+                {
+                    throw new ArgumentException($"Invalid ORDER BY direction '{dir}'. Use ASC or DESC.");
+                }
+
+                validated.Add($"{encapsulated} {dir}");
             }
+
+            if (validated.Count == 0)
+            {
+                throw new ArgumentException($"ORDER BY could not be resolved for {typeof(T).Name}.");
+            }
+
+            orderBy = string.Join(", ", validated);
 
             var selectCols = new StringBuilder();
             ConnectionExtensions.NewBuilder(conv).BuildSelect(selectCols, SqlBuilder.GetScaffoldableProperties<T>());
@@ -364,13 +322,6 @@ namespace QueryKit.Extensions
         /// Asynchronously inserts a new entity and returns the generated primary key as an <see cref="object"/>.
         /// For strongly-typed keys prefer the generic overload.
         /// </summary>
-        /// <typeparam name="T">The entity type to insert.</typeparam>
-        /// <param name="connection">The database connection.</param>
-        /// <param name="entityToInsert">The entity instance to insert.</param>
-        /// <param name="transaction">Optional transaction to enlist commands in.</param>
-        /// <param name="commandTimeout">Optional command timeout in seconds.</param>
-        /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <returns>A task producing the generated primary key value.</returns>
         public static Task<object?> InsertAsync<T>(this IDbConnection connection, T entityToInsert,
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
@@ -381,15 +332,6 @@ namespace QueryKit.Extensions
         /// <summary>
         /// Asynchronously inserts a new entity and returns the generated primary key as <typeparamref name="TKey"/>.
         /// </summary>
-        /// <typeparam name="TKey">The key type (e.g., <see cref="int"/>, <see cref="long"/>, <see cref="Guid"/>, <see cref="string"/>).</typeparam>
-        /// <typeparam name="T">The entity type to insert.</typeparam>
-        /// <param name="connection">The database connection.</param>
-        /// <param name="entityToInsert">The entity instance to insert.</param>
-        /// <param name="transaction">Optional transaction to enlist commands in.</param>
-        /// <param name="commandTimeout">Optional command timeout in seconds.</param>
-        /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <returns>A task producing the generated primary key value.</returns>
-        /// <exception cref="ArgumentException">Thrown when no key property can be located or when a required string key is not provided.</exception>
         public static async Task<TKey?> InsertAsync<TKey, T>(this IDbConnection connection, T entityToInsert,
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
@@ -398,7 +340,7 @@ namespace QueryKit.Extensions
             var builder = ConnectionExtensions.NewBuilder(conv);
 
             var type = typeof(T);
-            var table = conv.GetTableName(type);
+            var table = conv.GetTableNameEncapsulated(type);
             var idProps = SqlConvention.GetIdProperties(type);
 
             if (idProps == null || idProps.Length == 0)
@@ -421,6 +363,13 @@ namespace QueryKit.Extensions
                 if (string.IsNullOrWhiteSpace(val))
                     throw new ArgumentException(
                         "String key must be supplied before calling InsertAsync when using a string [Key].");
+            }
+
+            if (SqlConvention.TryGetVersionProperty(type, out var versionProp))
+            {
+                var current = (long)(versionProp!.GetValue(entityToInsert) ?? 0L);
+                if (current == 0L)
+                    versionProp.SetValue(entityToInsert, 1L);
             }
 
             var sbCols = new StringBuilder();
@@ -446,30 +395,36 @@ namespace QueryKit.Extensions
                 var id = await connection.ExecuteScalarAsync(Cmd(sql.ToString(), entityToInsert,
                     transaction, commandTimeout, cancellationToken));
                 if (id == null || id is DBNull) return default;
-                return (TKey)Convert.ChangeType(id, typeof(TKey));
-            }
-            else
-            {
-                if (Debugger.IsAttached)
-                    Trace.WriteLine($"InsertAsync<{type.Name}>: {sql}");
 
-                await connection.ExecuteAsync(Cmd(sql.ToString(), entityToInsert, transaction, commandTimeout,
-                    cancellationToken));
-                return (TKey?)keyProperty.GetValue(entityToInsert, null);
+                var targetType = Nullable.GetUnderlyingType(typeof(TKey)) ?? typeof(TKey);
+
+                try
+                {
+                    // Most identity keys are integral
+                    if (targetType == typeof(long)) return (TKey)(object)Convert.ToInt64(id);
+                    if (targetType == typeof(int)) return (TKey)(object)Convert.ToInt32(id);
+                    if (targetType == typeof(short)) return (TKey)(object)Convert.ToInt16(id);
+
+                    return (TKey)Convert.ChangeType(id, targetType);
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidCastException(
+                        $"Could not convert identity value '{id}' ({id.GetType().FullName}) to {typeof(TKey).FullName}.", ex);
+                }
             }
+
+            if (Debugger.IsAttached)
+                Trace.WriteLine($"InsertAsync<{type.Name}>: {sql}");
+
+            await connection.ExecuteAsync(Cmd(sql.ToString(), entityToInsert, transaction, commandTimeout,
+                cancellationToken));
+            return (TKey?)keyProperty.GetValue(entityToInsert, null);
         }
 
         /// <summary>
         /// Asynchronously updates an existing entity identified by its key property.
         /// </summary>
-        /// <typeparam name="T">The entity type to update.</typeparam>
-        /// <param name="connection">The database connection.</param>
-        /// <param name="entityToUpdate">The entity instance with updated values.</param>
-        /// <param name="transaction">Optional transaction to enlist commands in.</param>
-        /// <param name="commandTimeout">Optional command timeout in seconds.</param>
-        /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <returns>A task producing the number of rows affected.</returns>
-        /// <exception cref="ArgumentException">Thrown when no key property can be located.</exception>
         public static Task<int> UpdateAsync<T>(this IDbConnection connection, T entityToUpdate,
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
@@ -482,7 +437,7 @@ namespace QueryKit.Extensions
             if (idProps == null || idProps.Length == 0)
                 throw new ArgumentException("UpdateAsync<T> requires an entity with a [Key] or Id property.");
 
-            var table = conv.GetTableName(type);
+            var table = conv.GetTableNameEncapsulated(type);
 
             var sb = new StringBuilder();
             sb.AppendFormat("update {0} set ", table);
@@ -492,7 +447,7 @@ namespace QueryKit.Extensions
             for (int i = 0; i < idProps.Length; i++)
             {
                 if (i > 0) sb.Append(" and ");
-                sb.AppendFormat("{0} = @{1}", conv.GetColumnName(idProps[i]), idProps[i].Name);
+                sb.AppendFormat("{0} = @{1}", conv.GetColumnNameEncapsulated(idProps[i]), idProps[i].Name);
             }
 
             if (Debugger.IsAttached)
@@ -504,25 +459,8 @@ namespace QueryKit.Extensions
 
         /// <summary>
         /// Asynchronously updates an entity with optimistic concurrency using a version column.
-        /// The version column is resolved by <see cref="SqlConvention.GetVersionProperty(Type)"/>:
-        /// either a property marked with <c>[Version]</c> or a conventional property named <c>Version</c>.
+        /// The version is incremented automatically in the UPDATE statement.
         /// </summary>
-        /// <typeparam name="T">The entity type to update.</typeparam>
-        /// <param name="connection">The database connection.</param>
-        /// <param name="entityToUpdate">The entity instance with updated values.</param>
-        /// <param name="expectedVersion">
-        /// The expected version value for concurrency control. The update will only succeed if the version matches.
-        /// </param>
-        /// <param name="transaction">Optional transaction to enlist commands in.</param>
-        /// <param name="commandTimeout">Optional command timeout in seconds.</param>
-        /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <returns>
-        /// A task producing the number of rows affected. If the version does not match, no rows will be updated.
-        /// </returns>
-        /// <exception cref="ArgumentNullException">Thrown if <paramref name="entityToUpdate"/> is null.</exception>
-        /// <exception cref="ArgumentException">
-        /// Thrown if the entity type does not define a valid version property (long) via <c>[Version]</c> or <c>Version</c>.
-        /// </exception>
         public static Task<int> UpdateWithVersionAsync<T>(
             this IDbConnection connection,
             T entityToUpdate,
@@ -543,26 +481,29 @@ namespace QueryKit.Extensions
                 throw new ArgumentException(
                     "UpdateWithVersionAsync<T> requires an entity with a [Key] or Id property.");
 
-            // Resolve & validate the version property (must be long)
-            var versionProp = SqlConvention.GetVersionProperty(type);
+            var versionProp = SqlConvention.GetVersionProperty(type)
+                ?? throw new ArgumentException(
+                    $"{type.Name} must have a public long Version property or a property marked with [Version].");
 
-            var table = conv.GetTableName(type);
-            var versionCol = conv.GetColumnName(versionProp);
+            var table = conv.GetTableNameEncapsulated(type);
+            var versionCol = conv.GetColumnNameEncapsulated(versionProp);
 
             var sb = new StringBuilder();
             sb.AppendFormat("update {0} set ", table);
+            int lengthBeforeSet = sb.Length;
 
-            // Build normal SET (must NOT include Version; exclude in SqlBuilder.GetUpdateableProperties)
             builder.BuildUpdateSet(entityToUpdate, sb);
 
-            // Append version increment (handle empty SET edge-case)
-            if (sb.ToString().EndsWith(" set ", StringComparison.OrdinalIgnoreCase))
+            bool hasOtherColumns = sb.Length > lengthBeforeSet;
+
+            if (hasOtherColumns)
             {
-                sb.AppendFormat("{0} = {0} + 1", versionCol);
+                sb.AppendFormat(", {0} = {0} + 1", versionCol);
             }
             else
             {
-                sb.Append(", ");
+                // Entity has only key/version columns. We still allow the update so callers can use
+                // this to perform a "version bump only" operation (e.g. optimistic lock heartbeat).
                 sb.AppendFormat("{0} = {0} + 1", versionCol);
             }
 
@@ -570,7 +511,7 @@ namespace QueryKit.Extensions
             for (int i = 0; i < idProps.Length; i++)
             {
                 if (i > 0) sb.Append(" and ");
-                sb.AppendFormat("{0} = @{1}", conv.GetColumnName(idProps[i]), idProps[i].Name);
+                sb.AppendFormat("{0} = @{1}", conv.GetColumnNameEncapsulated(idProps[i]), idProps[i].Name);
             }
 
             // Concurrency gate
@@ -588,14 +529,6 @@ namespace QueryKit.Extensions
         /// <summary>
         /// Asynchronously deletes an entity by using its key property values from the passed instance.
         /// </summary>
-        /// <typeparam name="T">The entity type to delete.</typeparam>
-        /// <param name="connection">The database connection.</param>
-        /// <param name="entityToDelete">The entity instance whose key values will be used.</param>
-        /// <param name="transaction">Optional transaction to enlist commands in.</param>
-        /// <param name="commandTimeout">Optional command timeout in seconds.</param>
-        /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <returns>A task producing the number of rows affected.</returns>
-        /// <exception cref="ArgumentException">Thrown when no key property can be located.</exception>
         public static Task<int> DeleteAsync<T>(this IDbConnection connection, T entityToDelete,
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
@@ -607,14 +540,14 @@ namespace QueryKit.Extensions
             if (idProps == null || idProps.Length == 0)
                 throw new ArgumentException("DeleteAsync<T> requires an entity with a [Key] or Id property.");
 
-            var table = conv.GetTableName(type);
+            var table = conv.GetTableNameEncapsulated(type);
 
             var sb = new StringBuilder();
             sb.AppendFormat("delete from {0} where ", table);
             for (int i = 0; i < idProps.Length; i++)
             {
                 if (i > 0) sb.Append(" and ");
-                sb.AppendFormat("{0} = @{1}", conv.GetColumnName(idProps[i]), idProps[i].Name);
+                sb.AppendFormat("{0} = @{1}", conv.GetColumnNameEncapsulated(idProps[i]), idProps[i].Name);
             }
 
             if (Debugger.IsAttached)
@@ -627,14 +560,6 @@ namespace QueryKit.Extensions
         /// <summary>
         /// Asynchronously deletes an entity by its primary key value (or composite key values).
         /// </summary>
-        /// <typeparam name="T">The entity type to delete.</typeparam>
-        /// <param name="connection">The database connection.</param>
-        /// <param name="id">The key value. For composite keys, supply an object with matching property names.</param>
-        /// <param name="transaction">Optional transaction to enlist commands in.</param>
-        /// <param name="commandTimeout">Optional command timeout in seconds.</param>
-        /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <returns>A task producing the number of rows affected.</returns>
-        /// <exception cref="ArgumentException">Thrown when no key property can be located.</exception>
         public static Task<int> DeleteAsync<T>(this IDbConnection connection, object id,
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
@@ -664,14 +589,14 @@ namespace QueryKit.Extensions
                 }
             }
 
-            var table = conv.GetTableName(type);
+            var table = conv.GetTableNameEncapsulated(type);
             var sb = new StringBuilder();
             sb.AppendFormat("delete from {0} where ", table);
 
             for (int i = 0; i < idProps.Length; i++)
             {
                 if (i > 0) sb.Append(" and ");
-                sb.AppendFormat("{0} = @{1}", conv.GetColumnName(idProps[i]), idProps[i].Name);
+                sb.AppendFormat("{0} = @{1}", conv.GetColumnNameEncapsulated(idProps[i]), idProps[i].Name);
             }
 
             if (Debugger.IsAttached)
@@ -683,32 +608,30 @@ namespace QueryKit.Extensions
         /// <summary>
         /// Asynchronously deletes multiple rows using an anonymous object for equality-based filters.
         /// </summary>
-        /// <typeparam name="T">The entity type to delete.</typeparam>
-        /// <param name="connection">The database connection.</param>
-        /// <param name="whereConditions">Anonymous object of filter properties/values.</param>
-        /// <param name="transaction">Optional transaction to enlist commands in.</param>
-        /// <param name="commandTimeout">Optional command timeout in seconds.</param>
-        /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <returns>A task producing the number of rows affected.</returns>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="whereConditions"/> is null or has no properties, to prevent
+        /// accidental full-table deletes. Use <see cref="DeleteListAsync{T}(IDbConnection, string, object, IDbTransaction, int?, CancellationToken)"/>
+        /// with an explicit <c>WHERE</c> clause if you intentionally want to delete all rows.
+        /// </exception>
         public static Task<int> DeleteListAsync<T>(this IDbConnection connection, object? whereConditions,
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
+            var whereProps = GetAllProperties(whereConditions)?.ToArray();
+            if (whereProps == null || whereProps.Length == 0)
+                throw new ArgumentException(
+                    $"DeleteListAsync<{typeof(T).Name}> requires at least one filter property to prevent accidental full-table deletes. " +
+                    "To delete all rows intentionally, use the string-conditions overload with conditions = \"1=1\".");
+
             var conv = ConnectionExtensions.NewConvention();
             var builder = ConnectionExtensions.NewBuilder(conv);
 
             var type = typeof(T);
-            var table = conv.GetTableName(type);
-            var whereProps = GetAllProperties(whereConditions)?.ToArray();
+            var table = conv.GetTableNameEncapsulated(type);
 
             var sb = new StringBuilder();
-            sb.AppendFormat("delete from {0}", table);
-
-            if (whereProps != null && whereProps.Any())
-            {
-                sb.Append(" where ");
-                builder.BuildWhere<T>(sb, whereProps, whereConditions);
-            }
+            sb.AppendFormat("delete from {0} where ", table);
+            builder.BuildWhere<T>(sb, whereProps, whereConditions);
 
             if (Debugger.IsAttached)
                 Trace.WriteLine($"DeleteListAsync<{type.Name}>: {sb}");
@@ -720,53 +643,40 @@ namespace QueryKit.Extensions
         /// <summary>
         /// Asynchronously deletes multiple rows using a raw SQL <c>WHERE</c> fragment with optional parameters.
         /// </summary>
-        /// <typeparam name="T">The entity type to delete.</typeparam>
-        /// <param name="connection">The database connection.</param>
-        /// <param name="conditions">A SQL <c>WHERE</c> fragment (with or without the <c>WHERE</c> keyword).</param>
-        /// <param name="parameters">Optional parameters object.</param>
-        /// <param name="transaction">Optional transaction to enlist commands in.</param>
-        /// <param name="commandTimeout">Optional command timeout in seconds.</param>
-        /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <returns>A task producing the number of rows affected.</returns>
         public static Task<int> DeleteListAsync<T>(this IDbConnection connection, string conditions,
             object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
+            if (string.IsNullOrWhiteSpace(conditions))
+                throw new ArgumentException(
+                    $"DeleteListAsync<{typeof(T).Name}> requires at least one filter property to prevent accidental full-table deletes. " +
+                    "To delete all rows intentionally, use the string-conditions overload with conditions = \"1=1\".",
+                    nameof(conditions));
+
             var conv = ConnectionExtensions.NewConvention();
 
             var type = typeof(T);
-            var table = conv.GetTableName(type);
+            var table = conv.GetTableNameEncapsulated(type);
 
             var sb = new StringBuilder();
             sb.AppendFormat("delete from {0}", table);
 
-            if (!string.IsNullOrWhiteSpace(conditions))
-            {
-                if (!conditions.TrimStart().StartsWith("where", StringComparison.OrdinalIgnoreCase))
-                    sb.Append(" where ");
-                else
-                    sb.Append(" ");
-                sb.Append(conditions);
-            }
+            if (!conditions.TrimStart().StartsWith("where", StringComparison.OrdinalIgnoreCase))
+                sb.Append(" where ");
+            else
+                sb.Append(" ");
+
+            sb.Append(conditions);
 
             if (Debugger.IsAttached)
                 Trace.WriteLine($"DeleteListAsync<{type.Name}>: {sb}");
 
-            return connection.ExecuteAsync(Cmd(sb.ToString(), parameters, transaction, commandTimeout,
-                cancellationToken));
+            return connection.ExecuteAsync(Cmd(sb.ToString(), parameters, transaction, commandTimeout, cancellationToken));
         }
 
         /// <summary>
         /// Asynchronously returns the number of rows that match an optional <c>WHERE</c> clause.
         /// </summary>
-        /// <typeparam name="T">The entity type to count.</typeparam>
-        /// <param name="connection">The database connection.</param>
-        /// <param name="conditions">A SQL <c>WHERE</c> fragment (with or without the <c>WHERE</c> keyword).</param>
-        /// <param name="parameters">Optional parameters object.</param>
-        /// <param name="transaction">Optional transaction to enlist commands in.</param>
-        /// <param name="commandTimeout">Optional command timeout in seconds.</param>
-        /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <returns>A task producing the number of matching rows.</returns>
         public static Task<int> RecordCountAsync<T>(this IDbConnection connection, string conditions = "",
             object? parameters = null, IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
@@ -774,7 +684,7 @@ namespace QueryKit.Extensions
             var conv = ConnectionExtensions.NewConvention();
 
             var type = typeof(T);
-            var table = conv.GetTableName(type);
+            var table = conv.GetTableNameEncapsulated(type);
 
             var sb = new StringBuilder();
             sb.AppendFormat("Select count(1) from {0}", table);
@@ -801,14 +711,17 @@ namespace QueryKit.Extensions
             return ColumnMapCache.GetOrAdd(key, _ =>
             {
                 var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
                 foreach (var p in SqlBuilder.GetScaffoldableProperties<T>())
                 {
-                    var col = conv.GetColumnName(p);
-                    if (!string.IsNullOrEmpty(col))
-                    {
-                        map[NormalizeIdentifier(col)] = col;
-                        map[NormalizeIdentifier(p.Name)] = col;
-                    }
+                    var raw = conv.GetColumnName(p);
+                    if (string.IsNullOrWhiteSpace(raw)) continue;
+
+                    var encapsulated = conv.Encapsulate(raw);
+
+                    // Allow either the raw column name or CLR property name as input
+                    map[NormalizeIdentifier(raw)] = encapsulated;
+                    map[NormalizeIdentifier(p.Name)] = encapsulated;
                 }
 
                 return map;
@@ -833,7 +746,7 @@ namespace QueryKit.Extensions
         }
 
         private static CommandDefinition Cmd(string sql, object? param, IDbTransaction? tx,
-            int? timeout, CancellationToken ct) => new CommandDefinition(
+            int? timeout, CancellationToken ct) => new(
             commandText: sql,
             parameters: param,
             transaction: tx,
@@ -844,7 +757,7 @@ namespace QueryKit.Extensions
         );
 
         private static CommandDefinition StoredProc(string storedProcedureName, object? param, IDbTransaction? tx,
-            int? timeout, CancellationToken ct) => new CommandDefinition(
+            int? timeout, CancellationToken ct) => new(
             commandText: storedProcedureName,
             parameters: param,
             transaction: tx,

@@ -1,29 +1,39 @@
-﻿using System;
+﻿using QueryKit.Attributes;
 using QueryKit.Interfaces;
+using System;
+using System.Linq;
+using System.Reflection;
 
-namespace QueryKit.Metadata
+namespace QueryKit.Metadata;
+
+/// <summary>
+/// Default implementation of <see cref="ITableNameResolver"/> that inspects
+/// a <c>[Table]</c> attribute (if present) and otherwise returns <see cref="Type.Name"/>.
+/// </summary>
+public sealed class TableNameResolver : ITableNameResolver
 {
-    /// <summary>
-    /// Default implementation of <see cref="ITableNameResolver"/> that inspects
-    /// a <c>[Table]</c> attribute (if present) and otherwise returns <see cref="Type.Name"/>.
-    /// </summary>
-    public sealed class TableNameResolver : ITableNameResolver
+    /// <inheritdoc />
+    public string ResolveTableName(Type type)
     {
-        /// <inheritdoc />
-        public string ResolveTableName(Type type)
+        // 1) Prefer QueryKit's TableAttribute if present
+        var qk = type.GetCustomAttributes(true).OfType<TableAttribute>().FirstOrDefault();
+        if (qk is not null && !string.IsNullOrWhiteSpace(qk.Name))
+            return string.IsNullOrWhiteSpace(qk.Schema) ? qk.Name : $"{qk.Schema}.{qk.Name}";
+
+        // 2) Fallback: accept other TableAttribute types (e.g. DataAnnotations)
+        var anyTableAttr = type.GetCustomAttributes(true)
+            .FirstOrDefault(a => a.GetType().Name == "TableAttribute");
+
+        if (anyTableAttr is not null)
         {
-            // Reads [Table("Name")] if present; else type.Name
-            var tableAttr = type.GetCustomAttributes(true);
-            var name = type.Name;
-            foreach (var a in tableAttr)
-            {
-                if (a.GetType().Name == "TableAttribute")
-                {
-                    var prop = a.GetType().GetProperty("Name");
-                    if (prop?.GetValue(a) is string s && !string.IsNullOrWhiteSpace(s)) { name = s; break; }
-                }
-            }
-            return name;
+            var at = anyTableAttr.GetType();
+            var name = at.GetProperty("Name", BindingFlags.Public | BindingFlags.Instance)?.GetValue(anyTableAttr) as string;
+            var schema = at.GetProperty("Schema", BindingFlags.Public | BindingFlags.Instance)?.GetValue(anyTableAttr) as string;
+
+            if (!string.IsNullOrWhiteSpace(name))
+                return string.IsNullOrWhiteSpace(schema) ? name : $"{schema}.{name}";
         }
+
+        return type.Name;
     }
 }

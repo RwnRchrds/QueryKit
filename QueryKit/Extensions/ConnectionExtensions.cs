@@ -26,23 +26,49 @@ namespace QueryKit.Extensions
         public static DialectConfig Config { get; private set; } = DialectConfig.Create(Dialect.SQLServer);
 
         /// <summary>
+        /// Optional sink for generated SQL. Invoked by every CRUD method with the SQL it built.
+        /// Defaults to writing to <see cref="Trace"/> when a debugger is attached, preserving
+        /// QueryKit's historical behavior. Set to <c>null</c> to silence logging, or assign a
+        /// custom delegate (e.g. <c>ILogger.LogDebug</c>) to capture SQL in production.
+        /// </summary>
+        public static Action<string>? Logger { get; set; } = msg =>
+        {
+            if (Debugger.IsAttached) Trace.WriteLine(msg);
+        };
+
+        internal static void Log(Func<string> messageFactory)
+        {
+            var logger = Logger;
+            if (logger is null) return;
+            logger(messageFactory());
+        }
+
+        // Single shared convention per dialect. Volatile so threads observe the swap promptly,
+        // though UseDialect is expected to be called at process startup.
+        private static volatile SqlConvention _convention = new(
+            DialectConfig.Create(Dialect.SQLServer),
+            new TableNameResolver(),
+            new ColumnNameResolver());
+
+        /// <summary>
         /// Sets the SQL dialect used for identifier quoting, identity retrieval, and paging SQL.
         /// </summary>
         public static void UseDialect(Dialect dialect)
         {
-            Config = DialectConfig.Create(dialect);
+            var newConfig = DialectConfig.Create(dialect);
+            var newConvention = new SqlConvention(newConfig, new TableNameResolver(), new ColumnNameResolver());
+            Config = newConfig;
+            _convention = newConvention;
             ColumnMapCache.Clear();
-            ConnectionExtensionsAsync.ClearColumnMapCache();
         }
 
-        internal static SqlConvention NewConvention() =>
-            new SqlConvention(Config, new TableNameResolver(), new ColumnNameResolver());
+        internal static SqlConvention NewConvention() => _convention;
 
         internal static SqlBuilder NewBuilder(SqlConvention conv) =>
             new SqlBuilder(conv);
 
         // cache: normalized name -> encapsulated column name for T + dialect
-        private static readonly ConcurrentDictionary<(Type, string), Dictionary<string, string>> ColumnMapCache = new();
+        internal static readonly ConcurrentDictionary<(Type, string), Dictionary<string, string>> ColumnMapCache = new();
 
         /// <summary>
         /// Builds an ascending order-by tuple for use with GetList.
@@ -60,6 +86,8 @@ namespace QueryKit.Extensions
         public static T? Get<T>(this IDbConnection connection, object id,
             IDbTransaction? transaction = null, int? commandTimeout = null)
         {
+            if (id is null) throw new ArgumentNullException(nameof(id));
+
             var conv = NewConvention();
             var builder = NewBuilder(conv);
 
@@ -97,8 +125,7 @@ namespace QueryKit.Extensions
                 }
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"Get<{currentType.Name}>: {sb} with Id: {id}");
+            Log(() => $"Get<{currentType.Name}>: {sb} with Id: {id}");
 
             return connection.Query<T>(Cmd(sb.ToString(), dyn, transaction, commandTimeout)).FirstOrDefault();
         }
@@ -165,8 +192,7 @@ namespace QueryKit.Extensions
                 sb.Append(" order by ").Append(string.Join(", ", cols));
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"GetList<{currentType.Name}>: {sb}");
+            Log(() => $"GetList<{currentType.Name}>: {sb}");
 
             return connection.Query<T>(Cmd(sb.ToString(), whereConditions, transaction, commandTimeout));
         }
@@ -231,8 +257,7 @@ namespace QueryKit.Extensions
                     sb.Append(" order by ").Append(string.Join(", ", validated));
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"GetList<{currentType.Name}>: {sb}");
+            Log(() => $"GetList<{currentType.Name}>: {sb}");
 
             return connection.Query<T>(Cmd(sb.ToString(), parameters, transaction, commandTimeout));
         }
@@ -321,8 +346,7 @@ namespace QueryKit.Extensions
 
             var query = sql.Replace("{WhereClause}", conditions);
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"GetListPaged<{currentType.Name}>: {query}");
+            Log(() => $"GetListPaged<{currentType.Name}>: {query}");
 
             return connection.Query<T>(Cmd(query, parameters, transaction, commandTimeout));
         }
@@ -343,6 +367,8 @@ namespace QueryKit.Extensions
         public static TKey? Insert<TKey, T>(this IDbConnection connection, T entityToInsert,
             IDbTransaction? transaction = null, int? commandTimeout = null)
         {
+            if (entityToInsert is null) throw new ArgumentNullException(nameof(entityToInsert));
+
             var conv = NewConvention();
             var builder = NewBuilder(conv);
 
@@ -395,31 +421,17 @@ namespace QueryKit.Extensions
                 sql.Append("; ");
                 sql.Append(Config.IdentitySql);
 
-                if (Debugger.IsAttached)
-                    Trace.WriteLine($"Insert<{type.Name}>: {sql}");
+                Log(() => $"Insert<{type.Name}>: {sql}");
 
                 var id = connection.ExecuteScalar(Cmd(sql.ToString(), entityToInsert, transaction, commandTimeout));
                 if (id == null || id is DBNull) return default;
 
-                var targetType = Nullable.GetUnderlyingType(typeof(TKey)) ?? typeof(TKey);
+                WriteIdentityBack(entityToInsert, keyProperty, id);
 
-                try
-                {
-                    if (targetType == typeof(long)) return (TKey)(object)Convert.ToInt64(id);
-                    if (targetType == typeof(int)) return (TKey)(object)Convert.ToInt32(id);
-                    if (targetType == typeof(short)) return (TKey)(object)Convert.ToInt16(id);
-
-                    return (TKey)Convert.ChangeType(id, targetType);
-                }
-                catch (Exception ex)
-                {
-                    throw new InvalidCastException(
-                        $"Could not convert identity value '{id}' ({id.GetType().FullName}) to {typeof(TKey).FullName}.", ex);
-                }
+                return ConvertIdentity<TKey>(id);
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"Insert<{type.Name}>: {sql}");
+            Log(() => $"Insert<{type.Name}>: {sql}");
 
             connection.Execute(Cmd(sql.ToString(), entityToInsert, transaction, commandTimeout));
             return (TKey?)keyProperty.GetValue(entityToInsert, null);
@@ -431,6 +443,8 @@ namespace QueryKit.Extensions
         public static int Update<T>(this IDbConnection connection, T entityToUpdate,
             IDbTransaction? transaction = null, int? commandTimeout = null)
         {
+            if (entityToUpdate is null) throw new ArgumentNullException(nameof(entityToUpdate));
+
             var conv = NewConvention();
             var builder = NewBuilder(conv);
 
@@ -452,8 +466,7 @@ namespace QueryKit.Extensions
                 sb.AppendFormat("{0} = @{1}", conv.GetColumnNameEncapsulated(idProps[i]), idProps[i].Name);
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"Update<{type.Name}>: {sb}");
+            Log(() => $"Update<{type.Name}>: {sb}");
 
             return connection.Execute(Cmd(sb.ToString(), entityToUpdate, transaction, commandTimeout));
         }
@@ -508,8 +521,7 @@ namespace QueryKit.Extensions
             var p = new DynamicParameters(entityToUpdate);
             p.Add("@ExpectedVersion", expectedVersion);
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"UpdateWithVersion<{type.Name}>: {sb}");
+            Log(() => $"UpdateWithVersion<{type.Name}>: {sb}");
 
             return connection.Execute(Cmd(sb.ToString(), p, transaction, commandTimeout));
         }
@@ -520,6 +532,8 @@ namespace QueryKit.Extensions
         public static int Delete<T>(this IDbConnection connection, T entityToDelete,
             IDbTransaction? transaction = null, int? commandTimeout = null)
         {
+            if (entityToDelete is null) throw new ArgumentNullException(nameof(entityToDelete));
+
             var conv = NewConvention();
 
             var type = typeof(T);
@@ -538,8 +552,7 @@ namespace QueryKit.Extensions
                 sb.AppendFormat("{0} = @{1}", conv.GetColumnNameEncapsulated(idProps[i]), idProps[i].Name);
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"Delete<{type.Name}>: {sb}");
+            Log(() => $"Delete<{type.Name}>: {sb}");
 
             return connection.Execute(Cmd(sb.ToString(), entityToDelete, transaction, commandTimeout));
         }
@@ -550,6 +563,8 @@ namespace QueryKit.Extensions
         public static int Delete<T>(this IDbConnection connection, object id,
             IDbTransaction? transaction = null, int? commandTimeout = null)
         {
+            if (id is null) throw new ArgumentNullException(nameof(id));
+
             var conv = NewConvention();
 
             var type = typeof(T);
@@ -584,8 +599,7 @@ namespace QueryKit.Extensions
                 sb.AppendFormat("{0} = @{1}", conv.GetColumnNameEncapsulated(idProps[i]), idProps[i].Name);
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"Delete<{type.Name}> by id: {sb}");
+            Log(() => $"Delete<{type.Name}> by id: {sb}");
 
             return connection.Execute(Cmd(sb.ToString(), dyn, transaction, commandTimeout));
         }
@@ -617,8 +631,7 @@ namespace QueryKit.Extensions
             sb.AppendFormat("delete from {0} where ", table);
             builder.BuildWhere<T>(sb, whereProps, whereConditions);
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"DeleteList<{type.Name}>: {sb}");
+            Log(() => $"DeleteList<{type.Name}>: {sb}");
 
             return connection.Execute(sb.ToString(), whereConditions, transaction, commandTimeout);
         }
@@ -652,8 +665,7 @@ namespace QueryKit.Extensions
                 sb.Append(conditions);
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"DeleteList<{type.Name}>: {sb}");
+            Log(() => $"DeleteList<{type.Name}>: {sb}");
 
             return connection.Execute(Cmd(sb.ToString(), parameters, transaction, commandTimeout));
         }
@@ -681,15 +693,50 @@ namespace QueryKit.Extensions
                 sb.Append(conditions);
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"RecordCount<{type.Name}>: {sb}");
+            Log(() => $"RecordCount<{type.Name}>: {sb}");
 
             return connection.ExecuteScalar<int>(Cmd(sb.ToString(), parameters, transaction, commandTimeout));
         }
 
         // ---- helpers ----
 
-        private static Dictionary<string, string> BuildAllowedColumnMap<T>(SqlConvention conv)
+        internal static void WriteIdentityBack<T>(T entity, PropertyInfo keyProperty, object id)
+        {
+            try
+            {
+                var keyTargetType = Nullable.GetUnderlyingType(keyProperty.PropertyType) ?? keyProperty.PropertyType;
+                var converted = Convert.ChangeType(id, keyTargetType);
+                keyProperty.SetValue(entity, converted, null);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidCastException(
+                    $"Could not assign identity '{id}' ({id.GetType().FullName}) to {typeof(T).Name}.{keyProperty.Name} ({keyProperty.PropertyType.FullName}).",
+                    ex);
+            }
+        }
+
+        internal static TKey? ConvertIdentity<TKey>(object id)
+        {
+            var targetType = Nullable.GetUnderlyingType(typeof(TKey)) ?? typeof(TKey);
+
+            try
+            {
+                if (targetType == typeof(object)) return (TKey)id;
+                if (targetType == typeof(long)) return (TKey)(object)Convert.ToInt64(id);
+                if (targetType == typeof(int)) return (TKey)(object)Convert.ToInt32(id);
+                if (targetType == typeof(short)) return (TKey)(object)Convert.ToInt16(id);
+
+                return (TKey)Convert.ChangeType(id, targetType);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidCastException(
+                    $"Could not convert identity value '{id}' ({id.GetType().FullName}) to {typeof(TKey).FullName}.", ex);
+            }
+        }
+
+        internal static Dictionary<string, string> BuildAllowedColumnMap<T>(SqlConvention conv)
         {
             var key = (typeof(T), Config.Dialect.ToString());
             return ColumnMapCache.GetOrAdd(key, _ =>
@@ -712,7 +759,7 @@ namespace QueryKit.Extensions
             });
         }
 
-        private static string NormalizeIdentifier(string s)
+        internal static string NormalizeIdentifier(string s)
         {
             s = s.Trim();
             var lastDot = s.LastIndexOf('.');
@@ -726,7 +773,7 @@ namespace QueryKit.Extensions
             return s.ToLowerInvariant();
         }
 
-        private static IEnumerable<PropertyInfo>? GetAllProperties(object? obj)
+        internal static IEnumerable<PropertyInfo>? GetAllProperties(object? obj)
         {
             return obj?.GetType().GetProperties();
         }

@@ -57,6 +57,13 @@ CREATE TABLE PersonWithTwoVersions (
     RevB  INTEGER NOT NULL
 );");
 
+            // Auto-increment integer identity (alias for ROWID in SQLite)
+            conn.Execute(@"
+CREATE TABLE AutoIntPersons (
+    Id    INTEGER PRIMARY KEY,
+    Name  TEXT NOT NULL
+);");
+
             return conn;
         }
         catch (Exception e)

@@ -214,6 +214,46 @@ public class SqlBuilderTests
         Assert.That(sbVals.ToString(), Is.EqualTo("@Id"));
     }
 
+    private sealed class InsertEntity_CompositeKey_GuidAndInt
+    {
+        [Key] public Guid OrderId { get; set; }
+        [Key] public int LineNumber { get; set; }
+        public string? Sku { get; set; }
+    }
+
+    [Test]
+    public void BuildInsertParameters_IncludesAllCompositeKeyParts()
+    {
+        var sbCols = new StringBuilder();
+        var sbVals = new StringBuilder();
+
+        _builder.BuildInsertParameters<InsertEntity_CompositeKey_GuidAndInt>(sbCols);
+        _builder.BuildInsertValues<InsertEntity_CompositeKey_GuidAndInt>(sbVals);
+
+        Assert.That(sbCols.ToString(), Is.EqualTo("\"OrderId\", \"LineNumber\", \"Sku\""));
+        Assert.That(sbVals.ToString(), Is.EqualTo("@OrderId, @LineNumber, @Sku"));
+    }
+
+    private sealed class InsertEntity_CompositeKey_TwoInts
+    {
+        [Key] public int TenantId { get; set; }
+        [Key] public int RecordNumber { get; set; }
+        public string? Name { get; set; }
+    }
+
+    [Test]
+    public void BuildInsertParameters_CompositeIntKeys_IncludesBoth()
+    {
+        var sbCols = new StringBuilder();
+        var sbVals = new StringBuilder();
+
+        _builder.BuildInsertParameters<InsertEntity_CompositeKey_TwoInts>(sbCols);
+        _builder.BuildInsertValues<InsertEntity_CompositeKey_TwoInts>(sbVals);
+
+        Assert.That(sbCols.ToString(), Is.EqualTo("\"TenantId\", \"RecordNumber\", \"Name\""));
+        Assert.That(sbVals.ToString(), Is.EqualTo("@TenantId, @RecordNumber, @Name"));
+    }
+
     // ----------------------------
     // BuildUpdateSet
     // ----------------------------

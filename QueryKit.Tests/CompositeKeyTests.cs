@@ -62,6 +62,34 @@ public class CompositeKeyTests
     }
 
     [Test]
+    public void Insert_CompositeKeyEntity_IncludesAllKeyParts_Sync()
+    {
+        var oid = Guid.NewGuid();
+        var item = new OrderItem { OrderId = oid, LineNumber = 7, Sku = "INS-SYNC" };
+
+        _conn.Insert<OrderItem>(item);
+
+        var count = _conn.ExecuteScalar<int>(
+            "select count(*) from OrderItems where OrderId=@OrderId and LineNumber=@LineNumber and Sku=@Sku",
+            new { OrderId = oid, LineNumber = 7, Sku = "INS-SYNC" });
+        Assert.That(count, Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task Insert_CompositeKeyEntity_IncludesAllKeyParts_Async()
+    {
+        var oid = Guid.NewGuid();
+        var item = new OrderItem { OrderId = oid, LineNumber = 9, Sku = "INS-ASYNC" };
+
+        await _conn.InsertAsync<OrderItem>(item);
+
+        var count = await _conn.ExecuteScalarAsync<int>(
+            "select count(*) from OrderItems where OrderId=@OrderId and LineNumber=@LineNumber and Sku=@Sku",
+            new { OrderId = oid, LineNumber = 9, Sku = "INS-ASYNC" });
+        Assert.That(count, Is.EqualTo(1));
+    }
+
+    [Test]
     public async Task Delete_ByCompositeId_RemovesRow_Async()
     {
         // Arrange

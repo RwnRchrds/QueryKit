@@ -2,6 +2,7 @@
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using QueryKit.Attributes;
 using QueryKit.Dialects;
 using QueryKit.Extensions;
@@ -76,7 +77,7 @@ public sealed class SqlConvention
             throw new ArgumentException("Identifier is not valid.", nameof(identifier));
         }
 
-        return string.Join(".", parts.Select(EncapsulateToken));
+        return string.Join(".", parts.Select(p => EncapsulateToken(p.Trim())));
     }
 
     /// <summary>
@@ -134,29 +135,52 @@ public sealed class SqlConvention
         return Encapsulate(raw);
     }
 
+    // Lock-free monotonic counter for the timestamp portion of SequentialGuid. Packed as
+    // (days << 32) | tick so we can compare-and-swap with a single Interlocked op.
+    private static long _lastSequentialTimestamp;
+
     /// <summary>
-    /// Returns a new sequential GUID based on the current timestamp.
+    /// Returns a new sequential GUID based on the current timestamp. The timestamp portion is
+    /// guaranteed to be strictly monotonically increasing across concurrent calls — within the
+    /// same SQL-Server tick (~3.33 ms) the counter advances by one tick rather than producing
+    /// non-sortable duplicates.
     /// </summary>
     public static Guid SequentialGuid()
     {
         var now = DateTime.UtcNow;
 
-        // Guard against ushort overflow in days portion (wraps after 2079-06-06)
+        // Guard against ushort overflow in days portion (wraps after ~2079-06-06)
         if (now > MaxSequentialGuidDate)
             throw new InvalidOperationException(
                 $"SequentialGuid date range exceeded (after {MaxSequentialGuidDate:yyyy-MM-dd}).");
 
-        var guidArray = Guid.NewGuid().ToByteArray();
-
         var days = (now - BaseDateUtc).Days;
-        if ((uint)days > ushort.MaxValue) // double-guard (covers weird clock issues too)
+        if ((uint)days > ushort.MaxValue)
             throw new InvalidOperationException(
                 $"SequentialGuid day range exceeded (after {MaxSequentialGuidDate:yyyy-MM-dd}).");
 
-        var msecs = (int)(now.TimeOfDay.TotalMilliseconds / SqlServerTickMs);
+        var tick = (int)(now.TimeOfDay.TotalMilliseconds / SqlServerTickMs);
+        var candidate = ((long)days << 32) | (uint)tick;
 
-        var daysArray = BitConverter.GetBytes((ushort)days);
-        var msecsArray = BitConverter.GetBytes(msecs);
+        // Advance _lastSequentialTimestamp to max(candidate, previous + 1) atomically.
+        long previous, advanced;
+        do
+        {
+            previous = Volatile.Read(ref _lastSequentialTimestamp);
+            advanced = candidate > previous ? candidate : previous + 1;
+        }
+        while (Interlocked.CompareExchange(ref _lastSequentialTimestamp, advanced, previous) != previous);
+
+        var advancedDays = (int)(advanced >> 32);
+        if ((uint)advancedDays > ushort.MaxValue)
+            throw new InvalidOperationException("SequentialGuid sequence overflowed the day range.");
+
+        var advancedTick = (int)(advanced & 0xFFFFFFFFL);
+
+        var guidArray = Guid.NewGuid().ToByteArray();
+
+        var daysArray = BitConverter.GetBytes((ushort)advancedDays);
+        var msecsArray = BitConverter.GetBytes(advancedTick);
 
         Array.Reverse(daysArray);
         Array.Reverse(msecsArray);
@@ -169,18 +193,27 @@ public sealed class SqlConvention
 
     /// <summary>
     /// Retrieves the properties of the specified type that are considered identity properties, such as those marked
-    /// with a Key attribute or named "Id".
+    /// with a Key attribute or named "Id". Foreign <c>KeyAttribute</c> types (e.g. from
+    /// <c>System.ComponentModel.DataAnnotations</c>) are accepted via name match.
     /// </summary>
     public static PropertyInfo[] GetIdProperties(Type type)
     {
-        var keyed = type.GetProperties()
-            .Where(p => p.GetCustomAttributes(true).Any(a => a is KeyAttribute))
-            .ToList();
+        var props = type.GetProperties();
+        var keyed = props.Where(IsKey).ToList();
 
         return (keyed.Any()
             ? keyed
-            : type.GetProperties().Where(p => p.Name.Equals("Id", StringComparison.OrdinalIgnoreCase)))
+            : props.Where(p => p.Name.Equals("Id", StringComparison.OrdinalIgnoreCase)))
             .ToArray();
+    }
+
+    private static bool IsKey(PropertyInfo p)
+    {
+        if (Attribute.IsDefined(p, typeof(KeyAttribute), inherit: true)) return true;
+        var attrs = p.GetCustomAttributes(true);
+        for (int i = 0; i < attrs.Length; i++)
+            if (attrs[i].GetType().Name == "KeyAttribute") return true;
+        return false;
     }
 
     /// <summary>
@@ -247,5 +280,13 @@ public sealed class SqlConvention
     /// </summary>
     public static PropertyInfo[] GetIdProperties(object entity) => GetIdProperties(entity.GetType());
 
-    private string EncapsulateToken(string identifier) => string.Format(_dialect.Encapsulation, identifier);
+    private string EncapsulateToken(string identifier)
+    {
+        // Escape the closing delimiter inside the identifier (e.g. ] -> ]] for SQL Server).
+        var escape = _dialect.IdentifierEscapeChar;
+        if (identifier.IndexOf(escape) >= 0)
+            identifier = identifier.Replace(escape.ToString(), new string(escape, 2));
+
+        return string.Format(_dialect.Encapsulation, identifier);
+    }
 }

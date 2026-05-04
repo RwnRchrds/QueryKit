@@ -19,17 +19,12 @@ namespace QueryKit.Sql
 
         internal void BuildSelect(StringBuilder sb, IEnumerable<PropertyInfo> props)
         {
-            var list = props.ToList();
             var addedAny = false;
 
-            for (var i = 0; i < list.Count; i++)
+            foreach (var p in props)
             {
-                var p = list[i];
-
-                if (p.GetCustomAttributes(true).Any(a =>
-                        a.GetType().Name == nameof(IgnoreSelectAttribute) ||
-                        a.GetType().Name == nameof(NotMappedAttribute)))
-                    continue;
+                if (Attribute.IsDefined(p, typeof(IgnoreSelectAttribute), inherit: true)) continue;
+                if (IsNotMapped(p)) continue;
 
                 var rawCol = _conv.GetColumnName(p);
                 if (string.IsNullOrWhiteSpace(rawCol))
@@ -40,9 +35,8 @@ namespace QueryKit.Sql
                 // Always select the encapsulated DB column name
                 sb.Append(_conv.Encapsulate(rawCol));
 
-                // Alias back only when [Column] exists AND CLR name differs from raw column name
-                var colAttr = p.GetCustomAttributes(true).OfType<ColumnAttribute>().FirstOrDefault();
-                if (colAttr != null && !rawCol.Equals(p.Name, StringComparison.OrdinalIgnoreCase))
+                // Alias back only when the resolved column name differs from the CLR name
+                if (!rawCol.Equals(p.Name, StringComparison.OrdinalIgnoreCase))
                 {
                     sb.Append(" AS ").Append(_conv.Encapsulate(p.Name));
                 }
@@ -92,26 +86,10 @@ namespace QueryKit.Sql
 
         internal void BuildInsertParameters<T>(StringBuilder sb)
         {
-            var props = GetScaffoldableProperties<T>().ToArray();
             var addedAny = false;
 
-            foreach (var p in props)
+            foreach (var p in GetInsertableProperties<T>())
             {
-                // Skip identity int/long keys unless [Required]
-                if (p.PropertyType != typeof(Guid) && p.PropertyType != typeof(string)
-                                                   && Attribute.IsDefined(p, typeof(KeyAttribute), inherit: true)
-                                                   && !Attribute.IsDefined(p, typeof(RequiredAttribute), inherit: true))
-                    continue;
-
-                if (Attribute.IsDefined(p, typeof(IgnoreInsertAttribute), inherit: true))
-                    continue;
-
-                // Skip conventional Id for non-guid unless [Required]
-                if (p.Name.Equals("Id", StringComparison.OrdinalIgnoreCase)
-                    && !Attribute.IsDefined(p, typeof(RequiredAttribute), inherit: true)
-                    && p.PropertyType != typeof(Guid))
-                    continue;
-
                 var rawCol = _conv.GetColumnName(p);
                 if (string.IsNullOrWhiteSpace(rawCol))
                     throw new ArgumentException($"Property '{typeof(T).Name}.{p.Name}' is not mapped to a column.");
@@ -127,24 +105,10 @@ namespace QueryKit.Sql
 
         internal void BuildInsertValues<T>(StringBuilder sb)
         {
-            var props = GetScaffoldableProperties<T>().ToArray();
             var addedAny = false;
 
-            foreach (var p in props)
+            foreach (var p in GetInsertableProperties<T>())
             {
-                if (p.PropertyType != typeof(Guid) && p.PropertyType != typeof(string)
-                                                   && Attribute.IsDefined(p, typeof(KeyAttribute), inherit: true)
-                                                   && !Attribute.IsDefined(p, typeof(RequiredAttribute), inherit: true))
-                    continue;
-
-                if (Attribute.IsDefined(p, typeof(IgnoreInsertAttribute), inherit: true))
-                    continue;
-
-                if (p.Name.Equals("Id", StringComparison.OrdinalIgnoreCase)
-                    && !Attribute.IsDefined(p, typeof(RequiredAttribute), inherit: true)
-                    && p.PropertyType != typeof(Guid))
-                    continue;
-
                 if (addedAny) sb.Append(", ");
                 sb.Append('@').Append(p.Name);
                 addedAny = true;
@@ -175,11 +139,58 @@ namespace QueryKit.Sql
             return props
                 // global "QueryKit don't touch this"
                 .Where(p => !Attribute.IsDefined(p, typeof(IgnoreCrudAttribute), inherit: true))
-                // not a DB column
-                .Where(p => !Attribute.IsDefined(p, typeof(NotMappedAttribute), inherit: true))
+                // not a DB column (also accepts foreign NotMappedAttribute, e.g. DataAnnotations.Schema)
+                .Where(p => !IsNotMapped(p))
                 // default: simple types only, override: [Scaffold]
                 .Where(p => p.PropertyType.IsSimpleType() ||
                             Attribute.IsDefined(p, typeof(ScaffoldAttribute), inherit: true));
+        }
+
+        private static bool IsNotMapped(PropertyInfo p)
+        {
+            if (Attribute.IsDefined(p, typeof(NotMappedAttribute), inherit: true)) return true;
+            var attrs = p.GetCustomAttributes(true);
+            for (int i = 0; i < attrs.Length; i++)
+                if (attrs[i].GetType().Name == "NotMappedAttribute") return true;
+            return false;
+        }
+
+        // Properties that should appear in INSERT statements.
+        // Auto-identity skip applies only to a *single* int/long primary key (or conventional "Id"
+        // when no [Key] attributes exist). Composite-key parts are always included so callers can
+        // supply their values explicitly.
+        internal static IEnumerable<PropertyInfo> GetInsertableProperties<T>()
+        {
+            var props = GetScaffoldableProperties<T>().ToArray();
+            var keyCount = props.Count(p => Attribute.IsDefined(p, typeof(KeyAttribute), inherit: true));
+            return props.Where(p => IsInsertable(p, keyCount));
+        }
+
+        private static bool IsInsertable(PropertyInfo p, int keyCount)
+        {
+            if (Attribute.IsDefined(p, typeof(IgnoreInsertAttribute), inherit: true))
+                return false;
+
+            var hasKeyAttr = Attribute.IsDefined(p, typeof(KeyAttribute), inherit: true);
+            var isConventionalId =
+                keyCount == 0 && p.Name.Equals("Id", StringComparison.OrdinalIgnoreCase);
+
+            // Non-key columns: always include.
+            if (!hasKeyAttr && !isConventionalId)
+                return true;
+
+            // Key columns: caller-supplied values are always included.
+            if (Attribute.IsDefined(p, typeof(RequiredAttribute), inherit: true))
+                return true;
+            if (p.PropertyType == typeof(Guid) || p.PropertyType == typeof(string))
+                return true;
+
+            // Composite keys: include every part — none are auto-identity.
+            if (keyCount > 1)
+                return true;
+
+            // Single int/long key (or conventional "Id"): skip — assumed auto-identity.
+            return false;
         }
 
         internal static IEnumerable<PropertyInfo> GetUpdateableProperties<T>(T entity)

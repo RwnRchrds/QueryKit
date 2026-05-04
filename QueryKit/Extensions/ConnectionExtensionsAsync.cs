@@ -1,8 +1,6 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
-using System.Diagnostics;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -19,14 +17,6 @@ namespace QueryKit.Extensions
     /// </summary>
     public static class ConnectionExtensionsAsync
     {
-        private static readonly ConcurrentDictionary<(Type, string),
-            Dictionary<string, string>> ColumnMapCache = new();
-
-        internal static void ClearColumnMapCache()
-        {
-            ColumnMapCache.Clear();
-        }
-
         /// <summary>
         /// Asynchronously retrieves a single entity by its primary key.
         /// </summary>
@@ -34,6 +24,8 @@ namespace QueryKit.Extensions
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
+            if (id is null) throw new ArgumentNullException(nameof(id));
+
             var conv = ConnectionExtensions.NewConvention();
             var builder = ConnectionExtensions.NewBuilder(conv);
 
@@ -72,8 +64,7 @@ namespace QueryKit.Extensions
                 }
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"GetAsync<{currentType.Name}>: {sb} with Id: {id}");
+            ConnectionExtensions.Log(() => $"GetAsync<{currentType.Name}>: {sb} with Id: {id}");
 
             var result =
                 await connection.QueryAsync<T>(Cmd(sb.ToString(), dyn, transaction, commandTimeout, cancellationToken));
@@ -108,7 +99,7 @@ namespace QueryKit.Extensions
             var table = conv.GetTableNameEncapsulated(currentType);
 
             var sb = new StringBuilder();
-            var whereProps = GetAllProperties(whereConditions)?.ToArray();
+            var whereProps = ConnectionExtensions.GetAllProperties(whereConditions)?.ToArray();
 
             sb.Append("Select ");
             builder.BuildSelect(sb, SqlBuilder.GetScaffoldableProperties<T>());
@@ -142,8 +133,7 @@ namespace QueryKit.Extensions
                 sb.Append(" order by ").Append(string.Join(", ", cols));
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"GetListAsync<{currentType.Name}>: {sb}");
+            ConnectionExtensions.Log(() => $"GetListAsync<{currentType.Name}>: {sb}");
 
             return connection.QueryAsync<T>(Cmd(sb.ToString(), whereConditions, transaction, commandTimeout,
                 cancellationToken));
@@ -178,39 +168,36 @@ namespace QueryKit.Extensions
 
             if (!string.IsNullOrWhiteSpace(orderBy))
             {
-                Dictionary<string, string> allowed = BuildAllowedColumnMap<T>(conv);
+                var allowed = ConnectionExtensions.BuildAllowedColumnMap<T>(conv);
                 var validated = new List<string>();
-                var parts = orderBy?.Split(',');
-                if (parts != null)
+                var parts = orderBy.Split(',');
+
+                for (int i = 0; i < parts.Length; i++)
                 {
-                    for (int i = 0; i < parts.Length; i++)
-                    {
-                        var token = parts[i].Trim();
-                        if (string.IsNullOrEmpty(token)) continue;
+                    var token = parts[i].Trim();
+                    if (string.IsNullOrEmpty(token)) continue;
 
-                        string?[] bits = token.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                        if (bits.Length == 0) continue;
+                    var bits = token.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (bits.Length == 0) continue;
 
-                        var rawCol = bits[0]!;
-                        var norm = NormalizeIdentifier(rawCol);
-                        if (!allowed.TryGetValue(norm, out var encapsulated))
-                            throw new ArgumentException("Invalid ORDER BY column '" + rawCol + "' for " +
-                                                        currentType.Name + ".");
+                    var rawCol = bits[0];
+                    var norm = ConnectionExtensions.NormalizeIdentifier(rawCol);
+                    if (!allowed.TryGetValue(norm, out var encapsulated))
+                        throw new ArgumentException("Invalid ORDER BY column '" + rawCol + "' for " +
+                                                    currentType.Name + ".");
 
-                        var dir = (bits.Length > 1 ? bits[1] : "ASC")?.ToUpperInvariant();
-                        if (dir != "ASC" && dir != "DESC")
-                            throw new ArgumentException("Invalid ORDER BY direction '" + dir + "'. Use ASC or DESC.");
+                    var dir = (bits.Length > 1 ? bits[1] : "ASC").ToUpperInvariant();
+                    if (dir != "ASC" && dir != "DESC")
+                        throw new ArgumentException("Invalid ORDER BY direction '" + dir + "'. Use ASC or DESC.");
 
-                        validated.Add(encapsulated + " " + dir);
-                    }
+                    validated.Add(encapsulated + " " + dir);
                 }
 
                 if (validated.Count > 0)
                     sb.Append(" order by ").Append(string.Join(", ", validated));
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"GetListAsync<{currentType.Name}>: {sb}");
+            ConnectionExtensions.Log(() => $"GetListAsync<{currentType.Name}>: {sb}");
 
             return connection.QueryAsync<T>(Cmd(sb.ToString(), parameters, transaction, commandTimeout,
                 cancellationToken));
@@ -259,7 +246,7 @@ namespace QueryKit.Extensions
                 orderBy = idProps.First().Name;
             }
 
-            var allowed = BuildAllowedColumnMap<T>(conv);
+            var allowed = ConnectionExtensions.BuildAllowedColumnMap<T>(conv);
             var validated = new List<string>();
 
             foreach (var token in orderBy.Split(','))
@@ -271,7 +258,7 @@ namespace QueryKit.Extensions
                 if (bits.Length == 0) continue;
 
                 var raw = bits[0];
-                var norm = NormalizeIdentifier(raw);
+                var norm = ConnectionExtensions.NormalizeIdentifier(raw);
 
                 if (!allowed.TryGetValue(norm, out var encapsulated))
                 {
@@ -312,8 +299,7 @@ namespace QueryKit.Extensions
 
             var query = sql.Replace("{WhereClause}", conditions);
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"GetListPagedAsync<{currentType.Name}>: {query}");
+            ConnectionExtensions.Log(() => $"GetListPagedAsync<{currentType.Name}>: {query}");
 
             return connection.QueryAsync<T>(Cmd(query, parameters, transaction, commandTimeout, cancellationToken));
         }
@@ -336,6 +322,8 @@ namespace QueryKit.Extensions
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
+            if (entityToInsert is null) throw new ArgumentNullException(nameof(entityToInsert));
+
             var conv = ConnectionExtensions.NewConvention();
             var builder = ConnectionExtensions.NewBuilder(conv);
 
@@ -389,33 +377,18 @@ namespace QueryKit.Extensions
                 sql.Append("; ");
                 sql.Append(ConnectionExtensions.Config.IdentitySql);
 
-                if (Debugger.IsAttached)
-                    Trace.WriteLine($"InsertAsync<{type.Name}>: {sql}");
+                ConnectionExtensions.Log(() => $"InsertAsync<{type.Name}>: {sql}");
 
                 var id = await connection.ExecuteScalarAsync(Cmd(sql.ToString(), entityToInsert,
                     transaction, commandTimeout, cancellationToken));
                 if (id == null || id is DBNull) return default;
 
-                var targetType = Nullable.GetUnderlyingType(typeof(TKey)) ?? typeof(TKey);
+                ConnectionExtensions.WriteIdentityBack(entityToInsert, keyProperty, id);
 
-                try
-                {
-                    // Most identity keys are integral
-                    if (targetType == typeof(long)) return (TKey)(object)Convert.ToInt64(id);
-                    if (targetType == typeof(int)) return (TKey)(object)Convert.ToInt32(id);
-                    if (targetType == typeof(short)) return (TKey)(object)Convert.ToInt16(id);
-
-                    return (TKey)Convert.ChangeType(id, targetType);
-                }
-                catch (Exception ex)
-                {
-                    throw new InvalidCastException(
-                        $"Could not convert identity value '{id}' ({id.GetType().FullName}) to {typeof(TKey).FullName}.", ex);
-                }
+                return ConnectionExtensions.ConvertIdentity<TKey>(id);
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"InsertAsync<{type.Name}>: {sql}");
+            ConnectionExtensions.Log(() => $"InsertAsync<{type.Name}>: {sql}");
 
             await connection.ExecuteAsync(Cmd(sql.ToString(), entityToInsert, transaction, commandTimeout,
                 cancellationToken));
@@ -429,6 +402,8 @@ namespace QueryKit.Extensions
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
+            if (entityToUpdate is null) throw new ArgumentNullException(nameof(entityToUpdate));
+
             var conv = ConnectionExtensions.NewConvention();
             var builder = ConnectionExtensions.NewBuilder(conv);
 
@@ -450,8 +425,7 @@ namespace QueryKit.Extensions
                 sb.AppendFormat("{0} = @{1}", conv.GetColumnNameEncapsulated(idProps[i]), idProps[i].Name);
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"UpdateAsync<{type.Name}>: {sb}");
+            ConnectionExtensions.Log(() => $"UpdateAsync<{type.Name}>: {sb}");
 
             return connection.ExecuteAsync(Cmd(sb.ToString(), entityToUpdate, transaction, commandTimeout,
                 cancellationToken));
@@ -520,8 +494,7 @@ namespace QueryKit.Extensions
             var p = new DynamicParameters(entityToUpdate);
             p.Add("@ExpectedVersion", expectedVersion);
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"UpdateWithVersionAsync<{type.Name}>: {sb}");
+            ConnectionExtensions.Log(() => $"UpdateWithVersionAsync<{type.Name}>: {sb}");
 
             return connection.ExecuteAsync(Cmd(sb.ToString(), p, transaction, commandTimeout, cancellationToken));
         }
@@ -533,6 +506,8 @@ namespace QueryKit.Extensions
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
+            if (entityToDelete is null) throw new ArgumentNullException(nameof(entityToDelete));
+
             var conv = ConnectionExtensions.NewConvention();
 
             var type = typeof(T);
@@ -550,8 +525,7 @@ namespace QueryKit.Extensions
                 sb.AppendFormat("{0} = @{1}", conv.GetColumnNameEncapsulated(idProps[i]), idProps[i].Name);
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"DeleteAsync<{type.Name}>: {sb}");
+            ConnectionExtensions.Log(() => $"DeleteAsync<{type.Name}>: {sb}");
 
             return connection.ExecuteAsync(Cmd(sb.ToString(), entityToDelete, transaction, commandTimeout,
                 cancellationToken));
@@ -564,6 +538,8 @@ namespace QueryKit.Extensions
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
+            if (id is null) throw new ArgumentNullException(nameof(id));
+
             var conv = ConnectionExtensions.NewConvention();
 
             var type = typeof(T);
@@ -599,8 +575,7 @@ namespace QueryKit.Extensions
                 sb.AppendFormat("{0} = @{1}", conv.GetColumnNameEncapsulated(idProps[i]), idProps[i].Name);
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"DeleteAsync<{type.Name}> by id: {sb}");
+            ConnectionExtensions.Log(() => $"DeleteAsync<{type.Name}> by id: {sb}");
 
             return connection.ExecuteAsync(Cmd(sb.ToString(), dyn, transaction, commandTimeout, cancellationToken));
         }
@@ -617,7 +592,7 @@ namespace QueryKit.Extensions
             IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
-            var whereProps = GetAllProperties(whereConditions)?.ToArray();
+            var whereProps = ConnectionExtensions.GetAllProperties(whereConditions)?.ToArray();
             if (whereProps == null || whereProps.Length == 0)
                 throw new ArgumentException(
                     $"DeleteListAsync<{typeof(T).Name}> requires at least one filter property to prevent accidental full-table deletes. " +
@@ -633,8 +608,7 @@ namespace QueryKit.Extensions
             sb.AppendFormat("delete from {0} where ", table);
             builder.BuildWhere<T>(sb, whereProps, whereConditions);
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"DeleteListAsync<{type.Name}>: {sb}");
+            ConnectionExtensions.Log(() => $"DeleteListAsync<{type.Name}>: {sb}");
 
             return connection.ExecuteAsync(Cmd(sb.ToString(), whereConditions, transaction,
                 commandTimeout, cancellationToken));
@@ -668,8 +642,7 @@ namespace QueryKit.Extensions
 
             sb.Append(conditions);
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"DeleteListAsync<{type.Name}>: {sb}");
+            ConnectionExtensions.Log(() => $"DeleteListAsync<{type.Name}>: {sb}");
 
             return connection.ExecuteAsync(Cmd(sb.ToString(), parameters, transaction, commandTimeout, cancellationToken));
         }
@@ -698,51 +671,10 @@ namespace QueryKit.Extensions
                 sb.Append(conditions);
             }
 
-            if (Debugger.IsAttached)
-                Trace.WriteLine($"RecordCountAsync<{type.Name}>: {sb}");
+            ConnectionExtensions.Log(() => $"RecordCountAsync<{type.Name}>: {sb}");
 
             return connection.ExecuteScalarAsync<int>(Cmd(sb.ToString(), parameters, transaction, commandTimeout,
                 cancellationToken));
-        }
-
-        private static Dictionary<string, string> BuildAllowedColumnMap<T>(SqlConvention conv)
-        {
-            var key = (typeof(T), ConnectionExtensions.Config.Dialect.ToString());
-            return ColumnMapCache.GetOrAdd(key, _ =>
-            {
-                var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-                foreach (var p in SqlBuilder.GetScaffoldableProperties<T>())
-                {
-                    var raw = conv.GetColumnName(p);
-                    if (string.IsNullOrWhiteSpace(raw)) continue;
-
-                    var encapsulated = conv.Encapsulate(raw);
-
-                    // Allow either the raw column name or CLR property name as input
-                    map[NormalizeIdentifier(raw)] = encapsulated;
-                    map[NormalizeIdentifier(p.Name)] = encapsulated;
-                }
-
-                return map;
-            });
-        }
-
-        private static string NormalizeIdentifier(string s)
-        {
-            s = s.Trim();
-            var lastDot = s.LastIndexOf('.');
-            if (lastDot >= 0 && lastDot < s.Length - 1) s = s.Substring(lastDot + 1);
-            if ((s.StartsWith("[") && s.EndsWith("]")) ||
-                (s.StartsWith("\"") && s.EndsWith("\"")) ||
-                (s.StartsWith("`") && s.EndsWith("`")))
-                s = s.Substring(1, s.Length - 2);
-            return s.ToLowerInvariant();
-        }
-
-        private static IEnumerable<PropertyInfo>? GetAllProperties(object? obj)
-        {
-            return obj?.GetType().GetProperties();
         }
 
         private static CommandDefinition Cmd(string sql, object? param, IDbTransaction? tx,

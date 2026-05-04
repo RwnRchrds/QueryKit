@@ -32,6 +32,17 @@ public class ConnectionExtensionsAsyncTests
     }
 
     [Test]
+    public async Task InsertAsync_WithIntIdentityKey_WritesIdentityBackToEntity()
+    {
+        var p = new AutoIntPerson { Name = "Linus" };
+
+        var key = await _conn.InsertAsync<int, AutoIntPerson>(p);
+
+        Assert.That(key, Is.GreaterThan(0));
+        Assert.That(p.Id, Is.EqualTo(key), "Identity value should be assigned to the entity instance.");
+    }
+
+    [Test]
     public async Task GetAsync_WithExistingId_ReturnsMatchingEntity()
     {
         var p = await SeedAsync("Barbara", "Liskov", 55);

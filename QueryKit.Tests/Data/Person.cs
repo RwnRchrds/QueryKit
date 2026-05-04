@@ -54,3 +54,10 @@ public class PersonWithTwoVersions
     [Version]
     public long RevB { get; set; }
 }
+
+[Table("AutoIntPersons")]
+public class AutoIntPerson
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = null!;
+}

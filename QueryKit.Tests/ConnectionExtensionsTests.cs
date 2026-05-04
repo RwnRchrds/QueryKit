@@ -32,6 +32,55 @@ public class ConnectionExtensionsTests
     }
 
     [Test]
+    public void Logger_WhenSet_ReceivesGeneratedSql()
+    {
+        var captured = new List<string>();
+        var previous = ConnectionExtensions.Logger;
+        try
+        {
+            ConnectionExtensions.Logger = sql => captured.Add(sql);
+            var p = Seed("Ada", "Lovelace", 36);
+            _ = _conn.Get<Person>(p.Id);
+        }
+        finally
+        {
+            ConnectionExtensions.Logger = previous;
+        }
+
+        Assert.That(captured, Is.Not.Empty);
+        Assert.That(captured.Any(s => s.Contains("Get<Person>")), Is.True);
+        Assert.That(captured.Any(s => s.Contains("Insert<Person>")), Is.True);
+    }
+
+    [Test]
+    public void Logger_WhenNull_NoLoggingHappens()
+    {
+        var previous = ConnectionExtensions.Logger;
+        try
+        {
+            ConnectionExtensions.Logger = null;
+            // Should not throw or do anything observable; just covers the null-guard path.
+            var p = Seed("Ada", "Lovelace", 36);
+            Assert.That(_conn.Get<Person>(p.Id), Is.Not.Null);
+        }
+        finally
+        {
+            ConnectionExtensions.Logger = previous;
+        }
+    }
+
+    [Test]
+    public void Insert_WithIntIdentityKey_WritesIdentityBackToEntity_Sync()
+    {
+        var p = new AutoIntPerson { Name = "Linus" };
+
+        var key = _conn.Insert<int, AutoIntPerson>(p);
+
+        Assert.That(key, Is.GreaterThan(0));
+        Assert.That(p.Id, Is.EqualTo(key), "Identity value should be assigned to the entity instance.");
+    }
+
+    [Test]
     public void Get_WithExistingId_ReturnsMatchingEntity()
     {
         var p = Seed("Barbara", "Liskov", 55);

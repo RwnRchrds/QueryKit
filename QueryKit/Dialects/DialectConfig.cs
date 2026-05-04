@@ -31,9 +31,19 @@
         /// </summary>
         public string PagedListSql { get; }
 
+        /// <summary>
+        /// Gets the closing delimiter used to encapsulate identifiers. Occurrences of this
+        /// character inside an identifier must be doubled to escape (e.g. <c>]</c> → <c>]]</c>
+        /// for SQL Server, <c>"</c> → <c>""</c> for ANSI/Postgres/SQLite/Oracle/DB2,
+        /// <c>`</c> → <c>``</c> for MySQL).
+        /// </summary>
+        public char IdentifierEscapeChar { get; }
+
         private DialectConfig(Dialect dialect, string encap, string identitySql, string pagedSql)
         {
             Dialect = dialect; Encapsulation = encap; IdentitySql = identitySql; PagedListSql = pagedSql;
+            // The closing delimiter is the last character of the format template.
+            IdentifierEscapeChar = encap.Length > 0 ? encap[encap.Length - 1] : '"';
         }
 
         /// <summary>
@@ -66,9 +76,10 @@
                         "SELECT CAST(IDENTITY_VAL_LOCAL() AS DEC(31,0)) AS \"id\" FROM SYSIBM.SYSDUMMY1",
                         "Select * from (Select {SelectColumns}, row_number() over(order by {OrderBy}) as PagedNumber from {TableName} {WhereClause} Order By {OrderBy}) as t where t.PagedNumber between (({PageNumber}-1) * {RowsPerPage} + 1) AND ({PageNumber} * {RowsPerPage})");
                 default:
+                    // SQL Server 2012+: OFFSET / FETCH NEXT — no PagedNumber leak in result set.
                     return new DialectConfig(dialect, "[{0}]",
-                        "SELECT CAST(SCOPE_IDENTITY()  AS BIGINT) AS [id]",
-                        "SELECT * FROM (SELECT ROW_NUMBER() OVER(ORDER BY {OrderBy}) AS PagedNumber, {SelectColumns} FROM {TableName} {WhereClause}) AS u WHERE PagedNumber BETWEEN (({PageNumber}-1) * {RowsPerPage} + 1) AND ({PageNumber} * {RowsPerPage})");
+                        "SELECT CAST(SCOPE_IDENTITY() AS BIGINT) AS [id]",
+                        "SELECT {SelectColumns} FROM {TableName} {WhereClause} ORDER BY {OrderBy} OFFSET (({PageNumber}-1) * {RowsPerPage}) ROWS FETCH NEXT {RowsPerPage} ROWS ONLY");
             }
         }
     }

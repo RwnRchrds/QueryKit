@@ -265,9 +265,10 @@ namespace QueryKit.Extensions
         /// <summary>
         /// Retrieves all entities of type <typeparamref name="T"/> from the mapped table.
         /// </summary>
-        public static IEnumerable<T> GetList<T>(this IDbConnection connection)
+        public static IEnumerable<T> GetList<T>(this IDbConnection connection,
+            IDbTransaction? transaction = null, int? commandTimeout = null)
         {
-            return connection.GetList<T>(new { });
+            return connection.GetList<T>(new { }, transaction, commandTimeout);
         }
 
         /// <summary>

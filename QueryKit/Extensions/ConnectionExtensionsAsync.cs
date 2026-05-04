@@ -207,9 +207,11 @@ namespace QueryKit.Extensions
         /// Asynchronously retrieves all entities from the mapped table.
         /// </summary>
         public static Task<IEnumerable<T>> GetListAsync<T>(this IDbConnection connection,
+            IDbTransaction? transaction = null, int? commandTimeout = null,
             CancellationToken cancellationToken = default)
         {
-            return connection.GetListAsync<T>(new { }, cancellationToken: cancellationToken);
+            return connection.GetListAsync<T>(new { }, transaction, commandTimeout,
+                cancellationToken: cancellationToken);
         }
 
         /// <summary>

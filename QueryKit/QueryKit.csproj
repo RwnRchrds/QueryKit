@@ -28,12 +28,11 @@
 
         <!-- CI bits / SourceLink -->
         <!-- Only set by CI; harmless locally -->
-        <ContinuousIntegrationBuild Condition="'$(TEAMCITY_VERSION)' != ''">true</ContinuousIntegrationBuild>
+        <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
         <EmbedUntrackedSources>true</EmbedUntrackedSources>
 
         <!-- === Versioning ===
-             TeamCity will pass /p:Version, /p:PackageVersion, /p:InformationalVersion.
-             We provide LOCAL FALLBACKS so dev machines still build nicely.
+             The release workflow passes /p:Version. Local fallbacks keep dev machines building.
         -->
         <!-- Default library (package) version when not provided by CI -->
         <Version Condition="'$(Version)' == ''">0.10.0</Version>

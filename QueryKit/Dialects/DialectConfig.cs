@@ -39,11 +39,24 @@
         /// </summary>
         public char IdentifierEscapeChar { get; }
 
+        /// <summary>
+        /// Gets a value indicating whether the dialect accepts several rows in one VALUES clause —
+        /// <c>INSERT INTO t (a, b) VALUES (1, 2), (3, 4)</c>.
+        /// </summary>
+        /// <remarks>
+        /// True everywhere QueryKit supports except Oracle, which has no multi-row VALUES and
+        /// spells the same thing <c>INSERT ALL INTO t (a, b) VALUES (1, 2) INTO t (a, b)
+        /// VALUES (3, 4) SELECT 1 FROM dual</c>. Batch inserts consult this rather than assuming
+        /// the SQL Server form.
+        /// </remarks>
+        public bool SupportsMultiRowValues { get; }
+
         private DialectConfig(Dialect dialect, string encap, string identitySql, string pagedSql)
         {
             Dialect = dialect; Encapsulation = encap; IdentitySql = identitySql; PagedListSql = pagedSql;
             // The closing delimiter is the last character of the format template.
             IdentifierEscapeChar = encap.Length > 0 ? encap[encap.Length - 1] : '"';
+            SupportsMultiRowValues = dialect != Dialect.Oracle;
         }
 
         /// <summary>

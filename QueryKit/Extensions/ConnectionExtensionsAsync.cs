@@ -398,6 +398,137 @@ namespace QueryKit.Extensions
         }
 
         /// <summary>
+        /// Asynchronously inserts many entities in as few statements as the dialect allows, and
+        /// returns the number of rows written. Columns are derived exactly as for
+        /// <see cref="InsertAsync{T}"/>, so <c>[Table]</c>, <c>[Column]</c> and <c>[IgnoreCrud]</c>
+        /// behave identically, and empty Guid keys are filled in per row.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="batchSize"/> sets the rows per statement. It defaults to a count that
+        /// keeps a batch inside the parameter limit providers impose (SQL Server allows 2100); set
+        /// it where a provider is tighter.
+        /// </remarks>
+        /// <exception cref="NotSupportedException">
+        /// The entity has an identity key. There is no portable way to read many generated keys
+        /// back from one statement, so insert those individually.
+        /// </exception>
+        public static async Task<int> BatchInsertAsync<T>(this IDbConnection connection,
+            IEnumerable<T> entitiesToInsert, IDbTransaction? transaction = null,
+            int? commandTimeout = null, int? batchSize = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (entitiesToInsert is null) throw new ArgumentNullException(nameof(entitiesToInsert));
+
+            var entities = entitiesToInsert as IList<T> ?? entitiesToInsert.ToList();
+            if (entities.Count == 0) return 0;
+
+            var conv = ConnectionExtensions.NewConvention();
+            var builder = ConnectionExtensions.NewBuilder(conv);
+
+            var type = typeof(T);
+            var table = conv.GetTableNameEncapsulated(type);
+            var idProps = SqlConvention.GetIdProperties(type);
+
+            if (idProps == null || idProps.Length == 0)
+                throw new ArgumentException("BatchInsertAsync<T> requires an entity with a [Key] or Id property.");
+
+            var keyProperty = idProps.First();
+            var keyType = keyProperty.PropertyType;
+            var isGuidKey = keyType == typeof(Guid);
+            var isStringKey = keyType == typeof(string);
+
+            if (!isGuidKey && !isStringKey)
+                throw new NotSupportedException(
+                    "BatchInsertAsync<T> supports Guid and string keys only. An identity key cannot be " +
+                    "read back for many rows in one statement; insert those individually.");
+
+            var columns = SqlBuilder.GetInsertablePropertyList<T>();
+            if (columns.Count == 0)
+                throw new ArgumentException($"No insertable columns were found for {type.Name}.");
+
+            // 2000 rather than SQL Server's 2100, leaving room for anything a dialect adds.
+            var perBatch = batchSize ?? Math.Max(1, 2000 / columns.Count);
+
+            var sbCols = new StringBuilder();
+            builder.BuildInsertParameters<T>(sbCols);
+
+            var written = 0;
+
+            var multiRow = ConnectionExtensions.Config.SupportsMultiRowValues;
+
+            for (var offset = 0; offset < entities.Count; offset += perBatch)
+            {
+                var take = Math.Min(perBatch, entities.Count - offset);
+                var sql = new StringBuilder();
+
+                // Oracle has no multi-row VALUES; INSERT ALL is how it says the same thing.
+                sql.Append(multiRow
+                    ? string.Format("insert into {0} ({1}) values ", table, sbCols)
+                    : "insert all ");
+
+                var parameters = new DynamicParameters();
+
+                for (var row = 0; row < take; row++)
+                {
+                    var entity = entities[offset + row];
+                    if (entity is null)
+                        throw new ArgumentException("BatchInsertAsync<T> was given a null entity.");
+
+                    if (isGuidKey)
+                    {
+                        var val = (Guid)(keyProperty.GetValue(entity, null) ?? Guid.Empty);
+                        if (val == Guid.Empty)
+                            keyProperty.SetValue(entity, SqlConvention.SequentialGuid(), null);
+                    }
+                    else
+                    {
+                        var val = keyProperty.GetValue(entity, null) as string;
+                        if (string.IsNullOrWhiteSpace(val))
+                            throw new ArgumentException(
+                                "String keys must be supplied before calling BatchInsertAsync.");
+                    }
+
+                    if (SqlConvention.TryGetVersionProperty(type, out var versionProp))
+                    {
+                        var current = (long)(versionProp!.GetValue(entity) ?? 0L);
+                        if (current == 0L)
+                            versionProp.SetValue(entity, 1L);
+                    }
+
+                    if (multiRow)
+                    {
+                        if (row > 0) sql.Append(", ");
+                        sql.Append('(');
+                        builder.BuildInsertValuesForRow<T>(sql, row);
+                        sql.Append(')');
+                    }
+                    else
+                    {
+                        sql.AppendFormat("into {0} ({1}) values (", table, sbCols);
+                        builder.BuildInsertValuesForRow<T>(sql, row);
+                        sql.Append(") ");
+                    }
+
+                    foreach (var p in columns)
+                    {
+                        parameters.Add($"{p.Name}_{row}", p.GetValue(entity, null));
+                    }
+                }
+
+                // INSERT ALL is a statement, not a values list, and needs a source query to drive it.
+                if (!multiRow) sql.Append("select 1 from dual");
+
+                var batchSql = sql.ToString();
+                ConnectionExtensions.Log(() => $"BatchInsertAsync<{type.Name}> ({take} rows): {batchSql}");
+
+                written += await connection.ExecuteAsync(Cmd(batchSql, parameters, transaction,
+                    commandTimeout, cancellationToken));
+            }
+
+            return written;
+        }
+
+        /// <summary>
         /// Asynchronously updates an existing entity identified by its key property.
         /// </summary>
         public static Task<int> UpdateAsync<T>(this IDbConnection connection, T entityToUpdate,

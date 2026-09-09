@@ -115,6 +115,26 @@ namespace QueryKit.Sql
             }
         }
 
+        /// <summary>
+        /// One row's placeholders for a multi-row VALUES clause, suffixed with the row's position so
+        /// each row in the statement carries its own parameters: (@Id_0, @Name_0), (@Id_1, @Name_1).
+        /// </summary>
+        internal void BuildInsertValuesForRow<T>(StringBuilder sb, int rowIndex)
+        {
+            var addedAny = false;
+
+            foreach (var p in GetInsertableProperties<T>())
+            {
+                if (addedAny) sb.Append(", ");
+                sb.Append('@').Append(p.Name).Append('_').Append(rowIndex);
+                addedAny = true;
+            }
+        }
+
+        /// <summary>The properties a batch insert writes, in the order its VALUES clause uses.</summary>
+        internal static IReadOnlyList<PropertyInfo> GetInsertablePropertyList<T>() =>
+            GetInsertableProperties<T>().ToArray();
+
         internal void BuildUpdateSet<T>(T entity, StringBuilder sb)
         {
             var props = GetUpdateableProperties(entity);

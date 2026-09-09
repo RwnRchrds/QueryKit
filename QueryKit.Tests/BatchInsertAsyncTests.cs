@@ -123,6 +123,36 @@ public class BatchInsertAsyncTests
         Assert.That(conn.ExecuteScalar<int>("SELECT COUNT(*) FROM Persons"), Is.EqualTo(0));
     }
 
+    // ----------------------------------------------------------------------- composite keys
+
+    [Test]
+    public async Task WritesCompositeKeysWithoutInventingAnyPart()
+    {
+        await _conn.ExecuteAsync(@"
+            create table if not exists OrderItems (
+                OrderId    TEXT    not null,
+                LineNumber INTEGER not null,
+                Sku        TEXT,
+                primary key (OrderId, LineNumber));");
+
+        var orderId = Guid.NewGuid();
+        var items = Enumerable.Range(1, 3)
+            .Select(i => new OrderItem { OrderId = orderId, LineNumber = i, Sku = "SKU" + i })
+            .ToArray();
+
+        var written = await _conn.BatchInsertAsync(items);
+
+        Assert.That(written, Is.EqualTo(3));
+        // Every part of the key must survive: a composite key has no auto-identity part, so
+        // nothing may be generated over the top of what the caller supplied.
+        Assert.That(items.Select(i => i.OrderId), Is.All.EqualTo(orderId));
+        Assert.That(await _conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM OrderItems WHERE OrderId = @OrderId", new { OrderId = orderId }),
+            Is.EqualTo(3));
+        Assert.That(await _conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(DISTINCT LineNumber) FROM OrderItems"), Is.EqualTo(3));
+    }
+
     // ------------------------------------------------------------------------- identity keys
 
     [Test]

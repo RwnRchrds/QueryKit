@@ -62,6 +62,11 @@
         /// </remarks>
         public bool SupportsInsertReturning { get; }
 
+        /// <summary>
+        /// Gets how this dialect spells an upsert. See <see cref="UpsertStyle"/>.
+        /// </summary>
+        public UpsertStyle UpsertStyle { get; }
+
         private DialectConfig(Dialect dialect, string encap, string identitySql, string pagedSql)
         {
             Dialect = dialect; Encapsulation = encap; IdentitySql = identitySql; PagedListSql = pagedSql;
@@ -69,6 +74,20 @@
             IdentifierEscapeChar = encap.Length > 0 ? encap[encap.Length - 1] : '"';
             SupportsMultiRowValues = dialect != Dialect.Oracle;
             SupportsInsertReturning = dialect == Dialect.PostgreSQL || dialect == Dialect.SQLite;
+
+            switch (dialect)
+            {
+                case Dialect.PostgreSQL:
+                case Dialect.SQLite:
+                    UpsertStyle = UpsertStyle.OnConflict;
+                    break;
+                case Dialect.MySQL:
+                    UpsertStyle = UpsertStyle.OnDuplicateKey;
+                    break;
+                default:
+                    UpsertStyle = UpsertStyle.Merge;
+                    break;
+            }
         }
 
         /// <summary>

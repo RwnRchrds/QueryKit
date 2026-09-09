@@ -135,6 +135,22 @@ namespace QueryKit.Sql
         internal static IReadOnlyList<PropertyInfo> GetInsertablePropertyList<T>() =>
             GetInsertableProperties<T>().ToArray();
 
+        /// <summary>
+        /// The columns an upsert overwrites when the key is already there: everything it would have
+        /// inserted, less the key itself — that is what identified the row — and less anything
+        /// marked read-only or excluded from updates.
+        /// </summary>
+        internal static IReadOnlyList<PropertyInfo> GetUpsertUpdatePropertyList<T>()
+        {
+            var keys = SqlConvention.GetIdProperties(typeof(T)).Select(p => p.Name).ToArray();
+
+            return GetInsertableProperties<T>()
+                .Where(p => !keys.Contains(p.Name, StringComparer.OrdinalIgnoreCase))
+                .Where(p => !Attribute.IsDefined(p, typeof(ReadOnlyAttribute), inherit: true))
+                .Where(p => !Attribute.IsDefined(p, typeof(IgnoreUpdateAttribute), inherit: true))
+                .ToArray();
+        }
+
         internal void BuildUpdateSet<T>(T entity, StringBuilder sb)
         {
             var props = GetUpdateableProperties(entity);

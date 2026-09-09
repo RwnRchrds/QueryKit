@@ -3,7 +3,7 @@
 > Lightweight, dependency-light SQL builder + CRUD extensions for Dapper.
 > Dialect-aware. Attribute-friendly. Zero ceremony.
 
-- **NuGet**: `Rowan.QueryKit`
+- **NuGet**: `BlockSoftware.QueryKit`
 - **Targets**: `net8.0` (recommended) + `netstandard2.0`
 - **Databases**: SQL Server, PostgreSQL, MySQL/MariaDB, SQLite, Oracle, Db2
 
@@ -24,6 +24,7 @@
   - [RecordCount](#recordcount)
 - [Writing data](#writing-data)
   - [Insert](#insert)
+  - [BatchInsert](#batchinsert)
   - [Update](#update)
   - [Optimistic concurrency with UpdateWithVersion](#optimistic-concurrency-with-updatewithversion)
   - [Delete](#delete)
@@ -43,7 +44,7 @@
 - **Tiny surface** — extension methods on `IDbConnection` (sync + async).
 - **Predictable SQL** — no LINQ provider, no expression trees pretending to be queries; you can log every statement.
 - **Dialect-aware** — identifier quoting, identity retrieval, and paging are picked per database.
-- **Attribute-friendly** — supports `[Key]`, `[Column]`, `[Table]`, `[NotMapped]`, `[IgnoreInsert]`, `[IgnoreUpdate]`, `[IgnoreSelect]`, `[IgnoreCrud]`, `[ReadOnly]`, `[Required]`, `[Version]`.
+- **Attribute-friendly** — supports `[Key]`, `[Column]`, `[Table]`, `[NotMapped]`, `[IgnoreInsert]`, `[IgnoreUpdate]`, `[IgnoreSelect]`, `[IgnoreCrud]`, `[ReadOnly]`, `[Required]`, `[Version]`, `[Scaffold]`.
 - **Batteries included** — paging, composite keys, anonymous filters, raw `WHERE` fragments, optimistic concurrency, and stored-procedure execution.
 
 ---
@@ -51,8 +52,11 @@
 ## Install
 
 ```bash
-dotnet add package Rowan.QueryKit
+dotnet add package BlockSoftware.QueryKit
 ```
+
+> Previously published as `Rowan.QueryKit`. The package ID changed at 0.10.0; the namespaces,
+> types and API are unchanged, so switching is a one-line edit to your `PackageReference`.
 
 QueryKit depends on `Dapper`. Bring your own `IDbConnection` (e.g. `SqlConnection`, `NpgsqlConnection`, `MySqlConnection`, `SqliteConnection`, `OracleConnection`).
 
@@ -128,7 +132,7 @@ db.Delete<User>(ada.Id);
 | `[IgnoreUpdate]`  | property   | Skipped from generated `UPDATE` statements.                                                    |
 | `[ReadOnly]`      | property   | Inserted and selected, but never updated.                                                      |
 | `[Version]`       | property   | Marks a `long` optimistic-concurrency column. Property may also simply be named `Version`.     |
-| `[Scaffold]`      | property   | Forces inclusion in generated SELECTs (override default skip rules).                           |
+| `[Scaffold]`      | property   | Treats a property as a column even though its type is not a simple type. Without it the property is left out of `SELECT`, `INSERT` **and** `UPDATE`, so a value set on it is silently dropped. Needed for `TimeOnly` / `DateOnly`. |
 
 ### Example
 
@@ -256,6 +260,48 @@ db.Insert<string, ApiKey>(new ApiKey { Id = "ak_live_abc", OwnerId = userId });
 
 After insert with an integer/identity key, the entity's key property is updated with the generated identity value. If a `[Version]` property exists and is `0`, it is initialised to `1`.
 
+### BatchInsert
+
+`Insert` costs one round trip per entity, so inserting a collection of any size spends its time in
+latency rather than in the insert. `BatchInsertAsync` sends many rows per statement and returns the
+number of rows written:
+
+```csharp
+var orders = Enumerable.Range(0, 5_000)
+    .Select(i => new Order { OrderNumber = $"ORD-{i}" })
+    .ToArray();
+
+int written = await db.BatchInsertAsync(orders, cancellationToken: ct);
+```
+
+Columns are derived exactly as they are for a single insert, so `[Table]`, `[Column]`,
+`[IgnoreInsert]` and the rest behave identically, and empty `Guid` keys are filled in per row.
+
+Rows are sent in batches, because providers cap how many parameters one statement may carry — SQL
+Server allows 2100. The default batch size divides a conservative budget by the column count; pass
+`batchSize` where a provider is tighter:
+
+```csharp
+await db.BatchInsertAsync(orders, batchSize: 200, cancellationToken: ct);
+```
+
+Multi-row `VALUES` is used rather than a provider-specific bulk copy, so this stays dialect-aware
+without QueryKit taking a dependency on any one provider. Oracle has no multi-row `VALUES` clause
+and gets `INSERT ALL ... SELECT 1 FROM dual` instead; nothing in your code changes.
+
+Pass an `IDbTransaction` to have the whole batch roll back together:
+
+```csharp
+using var tx = conn.BeginTransaction();
+await conn.BatchInsertAsync(orders, tx, cancellationToken: ct);
+tx.Commit();
+```
+
+> **Identity keys are not supported.** There is no portable way to read many generated keys back
+> from one statement, so `BatchInsertAsync` throws for an entity with an identity key. Use `Guid` or
+> `string` keys, or insert those rows individually.
+
+
 ### Update
 
 Updates every mapped column except keys, `[ReadOnly]`, and `[IgnoreUpdate]`:
@@ -344,6 +390,7 @@ var user  = await db.GetAsync<User>(id, cancellationToken: ct);
 var users = await db.GetListAsync<User>(new { IsActive = true }, cancellationToken: ct);
 var page  = await db.GetListPagedAsync<User>(1, 25, "", "Id ASC", cancellationToken: ct);
 var newId = await db.InsertAsync<int, User>(user, cancellationToken: ct);
+var rows  = await db.BatchInsertAsync(manyUsers, cancellationToken: ct);
 await db.UpdateAsync(user, cancellationToken: ct);
 await db.UpdateWithVersionAsync(doc, expectedVersion: doc.Revision, cancellationToken: ct);
 await db.DeleteAsync<User>(id, cancellationToken: ct);

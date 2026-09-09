@@ -416,11 +416,21 @@ namespace QueryKit.Extensions
 
             if (!isGuidKey && !isStringKey)
             {
-                if (string.IsNullOrEmpty(Config.IdentitySql))
-                    throw new NotSupportedException("Identity retrieval SQL is not configured for the current dialect.");
+                if (Config.SupportsInsertReturning)
+                {
+                    // RETURNING names the row that was just written. The alternative on PostgreSQL,
+                    // LASTVAL(), reports the last value taken from any sequence in the session, so
+                    // a trigger writing to another table would hand back that table's key instead.
+                    sql.AppendFormat(" returning {0}", conv.GetColumnNameEncapsulated(keyProperty));
+                }
+                else
+                {
+                    if (string.IsNullOrEmpty(Config.IdentitySql))
+                        throw new NotSupportedException("Identity retrieval SQL is not configured for the current dialect.");
 
-                sql.Append("; ");
-                sql.Append(Config.IdentitySql);
+                    sql.Append("; ");
+                    sql.Append(Config.IdentitySql);
+                }
 
                 Log(() => $"Insert<{type.Name}>: {sql}");
 

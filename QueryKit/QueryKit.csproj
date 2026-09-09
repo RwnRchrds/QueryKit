@@ -13,7 +13,7 @@
         <SymbolPackageFormat>snupkg</SymbolPackageFormat>
 
         <!-- NuGet metadata -->
-        <PackageId>Rowan.QueryKit</PackageId>
+        <PackageId>BlockSoftware.QueryKit</PackageId>
         <Title>QueryKit</Title>
         <Authors>Rowan Richards</Authors>
         <Company>Rowan Richards</Company>
@@ -36,7 +36,7 @@
              We provide LOCAL FALLBACKS so dev machines still build nicely.
         -->
         <!-- Default library (package) version when not provided by CI -->
-        <Version Condition="'$(Version)' == ''">0.9.0</Version>
+        <Version Condition="'$(Version)' == ''">0.10.0</Version>
         <PackageVersion Condition="'$(PackageVersion)' == ''">$(Version)</PackageVersion>
 
         <!-- Stable assembly version by default; override from CI if you want -->

@@ -123,6 +123,62 @@ public class BatchInsertAsyncTests
         Assert.That(conn.ExecuteScalar<int>("SELECT COUNT(*) FROM Persons"), Is.EqualTo(0));
     }
 
+    // ------------------------------------------------------------------------- identity keys
+
+    [Test]
+    public void RefusesAnIdentityKeyRatherThanLeavingItSilentlyUnset()
+    {
+        var people = new[] { new AutoIntPerson { Name = "Ada" }, new AutoIntPerson { Name = "Alan" } };
+
+        var ex = Assert.ThrowsAsync<NotSupportedException>(
+            () => _conn.BatchInsertAsync(people));
+
+        // The message has to say what to do instead, because the alternative is a caller
+        // shipping rows whose Id is still 0 and reading them back as foreign keys.
+        Assert.That(ex!.Message, Does.Contain("discardGeneratedKeys"));
+        Assert.That(ex.Message, Does.Contain("AutoIntPerson"));
+    }
+
+    [Test]
+    public async Task WritesIdentityRowsWhenTheCallerSaysTheKeysAreNotNeeded()
+    {
+        var people = Enumerable.Range(0, 5).Select(i => new AutoIntPerson { Name = "P" + i }).ToArray();
+
+        var written = await _conn.BatchInsertAsync(people, discardGeneratedKeys: true);
+
+        Assert.That(written, Is.EqualTo(5));
+        Assert.That(await _conn.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM AutoIntPersons"), Is.EqualTo(5));
+        // The database assigned real keys even though the entities never learned them.
+        Assert.That(await _conn.ExecuteScalarAsync<int>("SELECT COUNT(DISTINCT Id) FROM AutoIntPersons"),
+            Is.EqualTo(5));
+    }
+
+    [Test]
+    public async Task LeavesTheEntitiesKeysUnsetWhenTheyAreDiscarded()
+    {
+        var people = Enumerable.Range(0, 3).Select(i => new AutoIntPerson { Name = "P" + i }).ToArray();
+
+        await _conn.BatchInsertAsync(people, discardGeneratedKeys: true);
+
+        // Stated plainly so nobody mistakes this for InsertAsync, which does populate the key.
+        Assert.That(people.Select(p => p.Id), Is.All.EqualTo(0));
+    }
+
+    [Test]
+    public void DoesNotPutTheIdentityColumnInTheStatement()
+    {
+        string? captured = null;
+        ConnectionExtensions.Logger = msg => { if (msg.Contains("BatchInsertAsync")) captured ??= msg; };
+
+        _conn.BatchInsertAsync(new[] { new AutoIntPerson { Name = "Ada" } }, discardGeneratedKeys: true)
+            .GetAwaiter().GetResult();
+
+        Assert.That(captured, Is.Not.Null);
+        Assert.That(captured, Does.Not.Contain("@Id_0"),
+            "The identity column must be left for the database to fill.");
+        Assert.That(captured, Does.Contain("@Name_0"));
+    }
+
     // ------------------------------------------------------------- generated SQL, every dialect
 
     private string CaptureSql(Dialect dialect, int rows)

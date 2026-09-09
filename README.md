@@ -297,9 +297,17 @@ await conn.BatchInsertAsync(orders, tx, cancellationToken: ct);
 tx.Commit();
 ```
 
-> **Identity keys are not supported.** There is no portable way to read many generated keys back
-> from one statement, so `BatchInsertAsync` throws for an entity with an identity key. Use `Guid` or
-> `string` keys, or insert those rows individually.
+> **Identity keys need an opt-in.** The rows insert fine — the identity column is left out of the
+> statement exactly as it is for a single insert — but no dialect returns many generated keys from
+> one statement, so the entities' key properties cannot be populated. Rather than hand back objects
+> whose `Id` is silently still `0`, `BatchInsertAsync` throws unless you say you don't need them:
+>
+> ```csharp
+> await db.BatchInsertAsync(auditRows, discardGeneratedKeys: true, cancellationToken: ct);
+> ```
+>
+> Use it for rows nothing reads back by key. If you do need the keys, insert those rows with
+> `InsertAsync`.
 
 
 ### Update

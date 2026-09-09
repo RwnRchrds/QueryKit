@@ -35,7 +35,7 @@
              The release workflow passes /p:Version. Local fallbacks keep dev machines building.
         -->
         <!-- Default library (package) version when not provided by CI -->
-        <Version Condition="'$(Version)' == ''">0.10.0</Version>
+        <Version Condition="'$(Version)' == ''">0.10.1</Version>
         <PackageVersion Condition="'$(PackageVersion)' == ''">$(Version)</PackageVersion>
 
         <!-- Stable assembly version by default; override from CI if you want -->

@@ -408,13 +408,24 @@ namespace QueryKit.Extensions
         /// keeps a batch inside the parameter limit providers impose (SQL Server allows 2100); set
         /// it where a provider is tighter.
         /// </remarks>
+        /// <remarks>
+        /// An identity key is inserted perfectly well — the column is simply left out of the
+        /// statement, as it is for a single insert — but the keys the database generates cannot be
+        /// read back, because no dialect returns many of them from one statement. Rather than hand
+        /// back entities whose <c>Id</c> is silently still zero, this throws unless
+        /// <paramref name="discardGeneratedKeys"/> says the caller does not need them.
+        /// </remarks>
+        /// <param name="discardGeneratedKeys">
+        /// Permits an identity key, accepting that the entities' key properties are left unset
+        /// afterwards. Use it for rows nothing reads back by key — audit trails, events, join rows.
+        /// </param>
         /// <exception cref="NotSupportedException">
-        /// The entity has an identity key. There is no portable way to read many generated keys
-        /// back from one statement, so insert those individually.
+        /// The entity has an identity key and <paramref name="discardGeneratedKeys"/> is false.
         /// </exception>
         public static async Task<int> BatchInsertAsync<T>(this IDbConnection connection,
             IEnumerable<T> entitiesToInsert, IDbTransaction? transaction = null,
             int? commandTimeout = null, int? batchSize = null,
+            bool discardGeneratedKeys = false,
             CancellationToken cancellationToken = default)
         {
             if (entitiesToInsert is null) throw new ArgumentNullException(nameof(entitiesToInsert));
@@ -437,10 +448,12 @@ namespace QueryKit.Extensions
             var isGuidKey = keyType == typeof(Guid);
             var isStringKey = keyType == typeof(string);
 
-            if (!isGuidKey && !isStringKey)
+            if (!isGuidKey && !isStringKey && !discardGeneratedKeys)
                 throw new NotSupportedException(
-                    "BatchInsertAsync<T> supports Guid and string keys only. An identity key cannot be " +
-                    "read back for many rows in one statement; insert those individually.");
+                    $"BatchInsertAsync<T> cannot return the keys an identity column generates for {type.Name}: " +
+                    "no dialect reads many of them back from one statement, so the entities' key properties " +
+                    "would be left unset. Pass discardGeneratedKeys: true if nothing needs them afterwards, " +
+                    "or use InsertAsync per row if it does.");
 
             var columns = SqlBuilder.GetInsertablePropertyList<T>();
             if (columns.Count == 0)
@@ -480,13 +493,15 @@ namespace QueryKit.Extensions
                         if (val == Guid.Empty)
                             keyProperty.SetValue(entity, SqlConvention.SequentialGuid(), null);
                     }
-                    else
+                    else if (isStringKey)
                     {
                         var val = keyProperty.GetValue(entity, null) as string;
                         if (string.IsNullOrWhiteSpace(val))
                             throw new ArgumentException(
                                 "String keys must be supplied before calling BatchInsertAsync.");
                     }
+                    // Identity key, permitted by discardGeneratedKeys: there is nothing to assign,
+                    // and the column is not in the statement for the database to be given.
 
                     if (SqlConvention.TryGetVersionProperty(type, out var versionProp))
                     {

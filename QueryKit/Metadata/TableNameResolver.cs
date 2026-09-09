@@ -8,7 +8,7 @@ namespace QueryKit.Metadata;
 
 /// <summary>
 /// Default implementation of <see cref="ITableNameResolver"/> that inspects
-/// a <c>[Table]</c> attribute (if present) and otherwise returns <see cref="Type.Name"/>.
+/// a <c>[Table]</c> attribute (if present) and otherwise returns <c>Type.Name</c>.
 /// </summary>
 public sealed class TableNameResolver : ITableNameResolver
 {

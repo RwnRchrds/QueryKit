@@ -1,0 +1,41 @@
+name: CI
+
+# Builds and tests every push and pull request, so a break is found before a tag tries to ship it.
+on:
+  push:
+    branches: [ "**" ]
+    tags-ignore: [ "v*" ]   # release.yml builds and tests tagged commits itself
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The tests run on both runtimes the package targets.
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Test
+        run: dotnet test --no-build --configuration Release --verbosity normal
+
+      # A package with a known advisory against it fails the build rather than waiting to be noticed.
+      - name: Check for vulnerable packages
+        run: |
+          dotnet list package --vulnerable --include-transitive 2>&1 | tee vulnerable.txt
+          ! grep -q "has the following vulnerable packages" vulnerable.txt

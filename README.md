@@ -4,8 +4,8 @@
 > Dialect-aware. Attribute-friendly. Zero ceremony.
 
 - **NuGet**: `BlockSoftware.QueryKit`
-- **Targets**: `net8.0` (recommended) + `netstandard2.0`
-- **Databases**: SQL Server, PostgreSQL, MySQL/MariaDB, SQLite, Oracle, Db2
+- **Targets**: `net10.0`, `net8.0` + `netstandard2.0`
+- **Databases**: SQL Server, PostgreSQL, MySQL/MariaDB, SQLite, Db2; Oracle is [experimental](#choosing-a-dialect)
 
 ---
 
@@ -420,11 +420,16 @@ ConnectionExtensions.UseDialect(Dialect.PostgreSQL);
 | Dialect      | Identifier quoting | Identity retrieval                | Paging                       |
 | ------------ | ------------------ | --------------------------------- | ---------------------------- |
 | `SQLServer`  | `[col]`            | `SCOPE_IDENTITY()`                | `OFFSET … FETCH NEXT`        |
-| `PostgreSQL` | `"col"`            | `LASTVAL()`                       | `LIMIT … OFFSET …`           |
-| `SQLite`     | `"col"`            | `LAST_INSERT_ROWID()`             | `LIMIT … OFFSET …`           |
+| `PostgreSQL` | `"col"`            | `RETURNING`                       | `LIMIT … OFFSET …`           |
+| `SQLite`     | `"col"`            | `RETURNING`                       | `LIMIT … OFFSET …`           |
 | `MySQL`      | `` `col` ``        | `LAST_INSERT_ID()`                | `LIMIT … OFFSET …`           |
 | `Oracle`     | `"col"`            | (none — supply your own keys)     | `ROWNUM` window              |
 | `DB2`        | `"col"`            | `IDENTITY_VAL_LOCAL()`            | `ROW_NUMBER() OVER(...)`     |
+
+> **Oracle is experimental.** QueryKit writes parameters as `@name`, and Oracle's ODP.NET
+> provider expects `:name`, so any statement that takes parameters fails against a real Oracle
+> connection. The Oracle templates are checked as generated SQL only; nothing is run against an
+> Oracle database.
 
 `UseDialect` clears QueryKit's column allowlist cache, so it's safe to call again — but the expectation is to call it once during process startup.
 

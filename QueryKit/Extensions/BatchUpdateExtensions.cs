@@ -59,11 +59,12 @@ namespace QueryKit.Extensions
             if (keyProps == null || keyProps.Length == 0)
                 throw new ArgumentException("BatchUpdateAsync<T> requires an entity with a [Key] or Id property.");
 
-            var updates = SqlBuilder.GetUpsertUpdatePropertyList<T>();
+            // The same columns UpdateAsync writes, so a batch is exactly many single updates.
+            var updates = SqlBuilder.GetUpdateablePropertyList<T>();
             if (updates.Count == 0)
                 throw new ArgumentException(
                     $"{type.Name} has no updateable columns: every mapped property is a key, " +
-                    "[ReadOnly] or [IgnoreUpdate].");
+                    "the version, [ReadOnly] or [IgnoreUpdate].");
 
             var perStatement = updates.Count + keyProps.Length;
             var perBatch = batchSize ?? Math.Max(1, 2000 / perStatement);

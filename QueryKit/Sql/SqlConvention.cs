@@ -31,8 +31,9 @@ public sealed class SqlConvention
     private readonly ConcurrentDictionary<Type, string> _tableNames = new();
     private readonly ConcurrentDictionary<string, string?> _columnNames = new();
 
-    // Cache resolved version properties (reflection is not free)
-    private static readonly ConcurrentDictionary<Type, PropertyInfo> _versionProps = new();
+    // Cache resolved version properties (reflection is not free). Null records a type that has none,
+    // which is most of them, so the lookup is not repeated on every insert.
+    private static readonly ConcurrentDictionary<Type, PropertyInfo?> _versionProps = new();
 
     /// <summary>
     /// Instantiates a new instance of the SqlConvention class using default dialect and resolvers.
@@ -207,7 +208,7 @@ public sealed class SqlConvention
             .ToArray();
     }
 
-    private static bool IsKey(PropertyInfo p)
+    internal static bool IsKey(PropertyInfo p)
     {
         if (Attribute.IsDefined(p, typeof(KeyAttribute), inherit: true)) return true;
         var attrs = p.GetCustomAttributes(true);
@@ -242,15 +243,25 @@ public sealed class SqlConvention
             ? marked[0]
             : props.FirstOrDefault(p => p.Name.Equals("Version", StringComparison.OrdinalIgnoreCase));
 
-        if (prop == null)
-            return null; // No version property — not an error; caller decides.
+        // A Version found only by name that is not a number at all — a string holding "1.2.0", a
+        // Guid, a date — is ordinary data, not a version counter. An int or long? by that name is
+        // still a counter declared with the wrong type, and is reported below.
+        if (prop != null && marked.Length == 0 && !IsIntegral(prop.PropertyType))
+            prop = null;
 
-        if (prop.PropertyType != typeof(long))
+        if (prop != null && prop.PropertyType != typeof(long))
             throw new ArgumentException(
                 $"{type.Name}.{prop.Name} must be of type long (non-nullable) to use optimistic concurrency.");
 
         _versionProps[type] = prop;
-        return prop;
+        return prop; // Null when there is no version property — not an error; caller decides.
+    }
+
+    private static bool IsIntegral(Type t)
+    {
+        t = Nullable.GetUnderlyingType(t) ?? t;
+        return t == typeof(long) || t == typeof(int) || t == typeof(short) || t == typeof(byte) ||
+               t == typeof(ulong) || t == typeof(uint) || t == typeof(ushort) || t == typeof(sbyte);
     }
 
     /// <summary>

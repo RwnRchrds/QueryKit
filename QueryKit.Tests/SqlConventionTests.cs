@@ -179,6 +179,12 @@ public class SqlConventionTests
         public int Version { get; set; } // wrong
     }
 
+    private sealed class StringVersion
+    {
+        public Guid Id { get; set; }
+        public string Version { get; set; } = ""; // data, e.g. "1.2.0" — not a concurrency token
+    }
+
     private sealed class NullableVersion
     {
         public Guid Id { get; set; }
@@ -234,6 +240,12 @@ public class SqlConventionTests
         Assert.That(
             () => SqlConvention.GetVersionProperty(typeof(WrongTypeVersion)),
             Throws.TypeOf<ArgumentException>().With.Message.Contains("must be of type long"));
+    }
+
+    [Test]
+    public void GetVersionProperty_WhenNonNumericVersionByName_ReturnsNull()
+    {
+        Assert.That(SqlConvention.GetVersionProperty(typeof(StringVersion)), Is.Null);
     }
 
     [Test]

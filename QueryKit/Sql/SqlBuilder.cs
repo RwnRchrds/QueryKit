@@ -137,23 +137,30 @@ namespace QueryKit.Sql
 
         /// <summary>
         /// The columns an upsert overwrites when the key is already there: everything it would have
-        /// inserted, less the key itself — that is what identified the row — and less anything
-        /// marked read-only or excluded from updates.
+        /// inserted, less the key itself — that is what identified the row — less the version
+        /// column, which an upsert neither checks nor overwrites with a stale in-memory value, and
+        /// less anything marked read-only or excluded from updates.
         /// </summary>
         internal static IReadOnlyList<PropertyInfo> GetUpsertUpdatePropertyList<T>()
         {
             var keys = SqlConvention.GetIdProperties(typeof(T)).Select(p => p.Name).ToArray();
+            var version = SqlConvention.GetVersionProperty(typeof(T));
 
             return GetInsertableProperties<T>()
                 .Where(p => !keys.Contains(p.Name, StringComparer.OrdinalIgnoreCase))
+                .Where(p => p.Name != version?.Name)
                 .Where(p => !Attribute.IsDefined(p, typeof(ReadOnlyAttribute), inherit: true))
                 .Where(p => !Attribute.IsDefined(p, typeof(IgnoreUpdateAttribute), inherit: true))
                 .ToArray();
         }
 
+        /// <summary>The properties an update writes, in the order its SET clause uses.</summary>
+        internal static IReadOnlyList<PropertyInfo> GetUpdateablePropertyList<T>() =>
+            GetUpdateableProperties<T>().ToArray();
+
         internal void BuildUpdateSet<T>(T entity, StringBuilder sb)
         {
-            var props = GetUpdateableProperties(entity);
+            var props = GetUpdateableProperties<T>();
             var addedAny = false;
 
             foreach (var p in props)
@@ -198,7 +205,7 @@ namespace QueryKit.Sql
         internal static IEnumerable<PropertyInfo> GetInsertableProperties<T>()
         {
             var props = GetScaffoldableProperties<T>().ToArray();
-            var keyCount = props.Count(p => Attribute.IsDefined(p, typeof(KeyAttribute), inherit: true));
+            var keyCount = props.Count(SqlConvention.IsKey);
             return props.Where(p => IsInsertable(p, keyCount));
         }
 
@@ -207,7 +214,9 @@ namespace QueryKit.Sql
             if (Attribute.IsDefined(p, typeof(IgnoreInsertAttribute), inherit: true))
                 return false;
 
-            var hasKeyAttr = Attribute.IsDefined(p, typeof(KeyAttribute), inherit: true);
+            // Any [Key] counts, QueryKit's or a foreign one such as DataAnnotations', exactly as
+            // GetIdProperties decides what the key is.
+            var hasKeyAttr = SqlConvention.IsKey(p);
             var isConventionalId =
                 keyCount == 0 && p.Name.Equals("Id", StringComparison.OrdinalIgnoreCase);
 
@@ -229,13 +238,16 @@ namespace QueryKit.Sql
             return false;
         }
 
-        internal static IEnumerable<PropertyInfo> GetUpdateableProperties<T>(T entity)
+        internal static IEnumerable<PropertyInfo> GetUpdateableProperties<T>()
         {
+            // The resolved version property, not any property named Version: a string Version is
+            // ordinary data and is written like any other column.
+            var version = SqlConvention.GetVersionProperty(typeof(T));
+
             return GetScaffoldableProperties<T>()
                 .Where(p => !p.Name.Equals("Id", StringComparison.OrdinalIgnoreCase))
-                .Where(p => !p.Name.Equals("Version", StringComparison.OrdinalIgnoreCase))
-                .Where(p => !Attribute.IsDefined(p, typeof(KeyAttribute), inherit: true))
-                .Where(p => !Attribute.IsDefined(p, typeof(VersionAttribute), inherit: true))
+                .Where(p => p.Name != version?.Name)
+                .Where(p => !SqlConvention.IsKey(p))
                 .Where(p => !Attribute.IsDefined(p, typeof(ReadOnlyAttribute), inherit: true))
                 .Where(p => !Attribute.IsDefined(p, typeof(IgnoreUpdateAttribute), inherit: true));
         }

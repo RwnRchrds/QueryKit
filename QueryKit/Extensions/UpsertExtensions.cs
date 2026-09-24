@@ -76,6 +76,7 @@ namespace QueryKit.Extensions
                 throw new ArgumentException($"No insertable columns were found for {type.Name}.");
 
             var updates = SqlBuilder.GetUpsertUpdatePropertyList<T>();
+            var versionProp = SqlConvention.GetVersionProperty(type);
 
             var perBatch = batchSize ?? Math.Max(1, 2000 / columns.Count);
             var style = ConnectionExtensions.Config.UpsertStyle;
@@ -101,6 +102,11 @@ namespace QueryKit.Extensions
                         if (current == Guid.Empty)
                             key.SetValue(entity, SqlConvention.SequentialGuid(), null);
                     }
+
+                    // A row the upsert inserts starts at version 1, as InsertAsync's do. A row it
+                    // updates keeps its stored version: the version is not in the update half.
+                    if (versionProp != null && (long)(versionProp.GetValue(entity) ?? 0L) == 0L)
+                        versionProp.SetValue(entity, 1L);
 
                     foreach (var col in columns)
                         parameters.Add("@" + col.Name + "_" + i, col.GetValue(entity, null));

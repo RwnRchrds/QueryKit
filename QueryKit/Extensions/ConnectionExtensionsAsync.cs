@@ -414,21 +414,29 @@ namespace QueryKit.Extensions
         /// behave identically, and empty Guid keys are filled in per row.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// <paramref name="batchSize"/> sets the rows per statement. It defaults to a count that
         /// keeps a batch inside the parameter limit providers impose (SQL Server allows 2100); set
         /// it where a provider is tighter.
-        /// </remarks>
-        /// <remarks>
+        /// </para>
+        /// <para>
         /// An identity key is inserted perfectly well — the column is simply left out of the
         /// statement, as it is for a single insert — but the keys the database generates cannot be
         /// read back, because no dialect returns many of them from one statement. Rather than hand
         /// back entities whose <c>Id</c> is silently still zero, this throws unless
         /// <paramref name="discardGeneratedKeys"/> says the caller does not need them.
+        /// </para>
         /// </remarks>
+        /// <param name="connection">Open connection.</param>
+        /// <param name="entitiesToInsert">The entities to insert.</param>
+        /// <param name="transaction">Optional transaction.</param>
+        /// <param name="commandTimeout">Optional command timeout (seconds).</param>
+        /// <param name="batchSize">Rows per statement; defaults to a count inside the provider's parameter limit.</param>
         /// <param name="discardGeneratedKeys">
         /// Permits an identity key, accepting that the entities' key properties are left unset
         /// afterwards. Use it for rows nothing reads back by key — audit trails, events, join rows.
         /// </param>
+        /// <param name="cancellationToken">Cancellation token.</param>
         /// <exception cref="NotSupportedException">
         /// The entity has an identity key and <paramref name="discardGeneratedKeys"/> is false.
         /// </exception>

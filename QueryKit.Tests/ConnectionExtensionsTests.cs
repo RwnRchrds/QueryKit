@@ -312,7 +312,7 @@ public class ConnectionExtensionsTests
     public void DeleteList_WithNullWhere_Throws()
     {
         Assert.That(
-            () => _conn.DeleteList<Person>(null),
+            () => _conn.DeleteList<Person>(null!),
             Throws.TypeOf<ArgumentException>()
                 .With.Message.Contains("requires at least one filter property"));
     }

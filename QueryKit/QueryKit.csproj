@@ -2,9 +2,13 @@
 
     <PropertyGroup>
         <!-- Targets -->
-        <TargetFrameworks>net8.0;netstandard2.0</TargetFrameworks>
+        <TargetFrameworks>net10.0;net8.0;netstandard2.0</TargetFrameworks>
         <Nullable>enable</Nullable>
         <LangVersion>latest</LangVersion>
+        <!-- netstandard2.0's BCL has no nullable annotations (string.IsNullOrWhiteSpace cannot say
+             its argument is non-null afterwards), so it reports false positives. The net8.0 and
+             net10.0 builds check the same code against an annotated BCL. -->
+        <NoWarn Condition="'$(TargetFramework)' == 'netstandard2.0'">$(NoWarn);CS8600;CS8602;CS8603;CS8604</NoWarn>
 
         <!-- Packing -->
         <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
@@ -51,11 +55,9 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Dapper" Version="2.1.66" />
+        <PackageReference Include="Dapper" Version="2.1.89" />
         <!-- SourceLink for rich debugging from NuGet -->
-        <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.*" PrivateAssets="All" />
-        <!-- Only needed for netstandard2.0 builds that use dynamic binder -->
-        <PackageReference Include="Microsoft.CSharp" Version="4.7.0" Condition="'$(TargetFramework)'=='netstandard2.0'" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.401" PrivateAssets="All" />
     </ItemGroup>
 
     <!-- Pack the README (use project-relative path so it works in dotnet pack) -->

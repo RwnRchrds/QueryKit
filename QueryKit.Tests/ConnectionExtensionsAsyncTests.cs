@@ -409,7 +409,7 @@ public class ConnectionExtensionsAsyncTests
     public void DeleteListAsync_WithNullWhere_Throws()
     {
         Assert.That(
-            async () => await _conn.DeleteListAsync<Person>(null),
+            async () => await _conn.DeleteListAsync<Person>(null!),
             Throws.TypeOf<ArgumentException>()
                 .With.Message.Contains("requires at least one filter property"));
     }
